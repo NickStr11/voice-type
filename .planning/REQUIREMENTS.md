@@ -67,26 +67,26 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| REC-01 | — | Pending |
-| REC-02 | — | Pending |
-| REC-03 | — | Pending |
-| REC-04 | — | Pending |
-| STT-01 | — | Pending |
-| STT-02 | — | Pending |
-| STT-03 | — | Pending |
-| LLM-01 | — | Pending |
-| LLM-02 | — | Pending |
-| PST-01 | — | Pending |
-| PST-02 | — | Pending |
-| SYS-01 | — | Pending |
-| SYS-02 | — | Pending |
-| SYS-03 | — | Pending |
+| REC-01 | Phase 1 | Pending |
+| REC-02 | Phase 1 | Pending |
+| REC-03 | Phase 2 | Pending |
+| REC-04 | Phase 1 | Pending |
+| STT-01 | Phase 2 | Pending |
+| STT-02 | Phase 2 | Pending |
+| STT-03 | Phase 2 | Pending |
+| LLM-01 | Phase 2 | Pending |
+| LLM-02 | Phase 2 | Pending |
+| PST-01 | Phase 2 | Pending |
+| PST-02 | Phase 2 | Pending |
+| SYS-01 | Phase 2 | Pending |
+| SYS-02 | Phase 1 | Pending |
+| SYS-03 | Phase 1 | Pending |
 
 **Coverage:**
 - v1 requirements: 14 total
-- Mapped to phases: 0
-- Unmapped: 14
+- Mapped to phases: 14
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-23*
-*Last updated: 2026-03-23 after initial definition*
+*Last updated: 2026-03-23 — traceability filled after roadmap creation*
