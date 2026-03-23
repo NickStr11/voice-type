@@ -60,15 +60,28 @@ class PasteService:
             win32gui.SetForegroundWindow(hwnd)
             time.sleep(0.05)  # focus propagation — SetForegroundWindow is async
 
-            # Step 3: Write text to clipboard
-            _set_clipboard_text(text)
-
-            # Step 4: Send Ctrl+V
-            win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)  # pyright: ignore[reportUnknownMemberType]
-            win32api.keybd_event(ord("V"), 0, 0, 0)  # pyright: ignore[reportUnknownMemberType]
-            win32api.keybd_event(ord("V"), 0, win32con.KEYEVENTF_KEYUP, 0)  # pyright: ignore[reportUnknownMemberType]
-            win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)  # pyright: ignore[reportUnknownMemberType]
-            time.sleep(0.05)  # allow paste to register before restoring clipboard
+            # Step 3+4: Paste text block by block, using Shift+Enter for newlines
+            # This prevents Telegram/Discord/etc from sending on Enter
+            parts = text.split("\n")
+            for i, part in enumerate(parts):
+                part = part.strip()
+                if not part:
+                    continue
+                _set_clipboard_text(part)
+                # Ctrl+V to paste this block
+                win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)  # pyright: ignore[reportUnknownMemberType]
+                win32api.keybd_event(ord("V"), 0, 0, 0)  # pyright: ignore[reportUnknownMemberType]
+                win32api.keybd_event(ord("V"), 0, win32con.KEYEVENTF_KEYUP, 0)  # pyright: ignore[reportUnknownMemberType]
+                win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)  # pyright: ignore[reportUnknownMemberType]
+                time.sleep(0.03)
+                # Shift+Enter for newline (not Enter which sends message)
+                if i < len(parts) - 1:
+                    win32api.keybd_event(win32con.VK_SHIFT, 0, 0, 0)  # pyright: ignore[reportUnknownMemberType]
+                    win32api.keybd_event(win32con.VK_RETURN, 0, 0, 0)  # pyright: ignore[reportUnknownMemberType]
+                    win32api.keybd_event(win32con.VK_RETURN, 0, win32con.KEYEVENTF_KEYUP, 0)  # pyright: ignore[reportUnknownMemberType]
+                    win32api.keybd_event(win32con.VK_SHIFT, 0, win32con.KEYEVENTF_KEYUP, 0)  # pyright: ignore[reportUnknownMemberType]
+                    time.sleep(0.02)
+            time.sleep(0.05)
 
             logger.info(f"Pasted into HWND {hwnd}: {repr(text[:60])}")
 
