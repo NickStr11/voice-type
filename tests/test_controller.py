@@ -2,18 +2,13 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
 
-# Mock win32 modules so paste.py can be imported on non-Windows
-for mod in ("win32api", "win32clipboard", "win32con", "win32gui"):
-    if mod not in sys.modules:
-        sys.modules[mod] = MagicMock()
-
+# win32 mocks are installed in tests/conftest.py before any imports
 from voice_type.config import AppConfig
 from voice_type.controller import AppController, State
 

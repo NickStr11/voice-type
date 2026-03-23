@@ -20,7 +20,7 @@ import pystray  # type: ignore[import-untyped]
 from PIL import Image, ImageDraw
 from loguru import logger
 
-from voice_type.controller import State
+from voice_type.states import State
 
 # Icon size in pixels (system tray uses 16x16 or 32x32 — we generate larger
 # and let Windows scale down; avoids blurriness on high-DPI displays)
