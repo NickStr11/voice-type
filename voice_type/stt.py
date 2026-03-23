@@ -48,14 +48,13 @@ class STTClient:
         logger.info(f"STTClient ready — endpoint: {self._region}-speech.googleapis.com")
 
     async def recognize(self, audio_bytes: bytes) -> str:
-        """Transcribe LINEAR16 audio bytes via Chirp 2 batch recognize.
+        """Transcribe LINEAR16 audio bytes via Chirp 3 batch recognize.
 
-        Runs the blocking GCP call in asyncio.to_thread to avoid blocking
-        the event loop.
+        Automatically splits audio longer than 55 seconds into chunks
+        (Recognize API limit is 60s, we use 55s for safety margin).
 
         Args:
             audio_bytes: Raw LINEAR16 bytes at 16kHz mono int16.
-                         Obtain from: numpy_array.tobytes()
 
         Returns:
             Transcribed text, or empty string if no speech detected.
@@ -64,27 +63,41 @@ class STTClient:
             logger.warning("STTClient.recognize() called with empty audio")
             return ""
 
-        logger.info(
-            f"Sending {len(audio_bytes)} bytes to STT "
-            f"({len(audio_bytes) / 32000:.2f}s audio)"
-        )
+        duration_s = len(audio_bytes) / 32000
+        logger.info(f"Sending {len(audio_bytes)} bytes to STT ({duration_s:.2f}s audio)")
 
-        def _call() -> str:
+        # Split into chunks if longer than 55 seconds
+        max_chunk_bytes = 55 * 16000 * 2  # 55s * 16kHz * 2 bytes/sample
+        if len(audio_bytes) <= max_chunk_bytes:
+            chunks = [audio_bytes]
+        else:
+            chunks = [audio_bytes[i:i + max_chunk_bytes]
+                      for i in range(0, len(audio_bytes), max_chunk_bytes)]
+            logger.info(f"Audio split into {len(chunks)} chunks")
+
+        def _call_chunk(chunk: bytes) -> str:
             request = cloud_speech.RecognizeRequest(
                 recognizer=self._recognizer,
                 config=self._rec_config,
-                content=audio_bytes,
+                content=chunk,
             )
             response = self._client.recognize(request=request)
-            if not response.results:
-                return ""
-            # Take the top alternative from the first result
-            alternatives = response.results[0].alternatives
-            if not alternatives:
-                return ""
-            transcript: str = alternatives[0].transcript
-            return transcript
+            parts = []
+            for result in response.results:
+                if result.alternatives:
+                    parts.append(result.alternatives[0].transcript)
+            return " ".join(parts)
 
-        raw_text = await asyncio.to_thread(_call)
+        def _call_all() -> str:
+            results = []
+            for i, chunk in enumerate(chunks):
+                text = _call_chunk(chunk)
+                if text:
+                    results.append(text)
+                if len(chunks) > 1:
+                    logger.info(f"Chunk {i + 1}/{len(chunks)} done")
+            return " ".join(results)
+
+        raw_text = await asyncio.to_thread(_call_all)
         logger.info(f"STT result: {repr(raw_text[:80])}")
         return raw_text
