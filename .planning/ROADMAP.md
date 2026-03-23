@@ -30,9 +30,9 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 4 plans
 
 Plans:
-- [ ] 01-01-PLAN.md — Project scaffold: pyproject.toml deps + AppConfig dataclass with .env validation
-- [ ] 01-02-PLAN.md — AudioRecorder (16kHz mono int16) + microphone permission check
-- [ ] 01-03-PLAN.md — HotkeyListener (pynput GlobalHotKeys, no suppress) + window HWND capture
+- [x] 01-01-PLAN.md — Project scaffold: pyproject.toml deps + AppConfig dataclass with .env validation
+- [x] 01-02-PLAN.md — AudioRecorder (16kHz mono int16) + microphone permission check
+- [x] 01-03-PLAN.md — HotkeyListener (pynput GlobalHotKeys, no suppress) + window HWND capture
 - [ ] 01-04-PLAN.md — AppController state machine + main.py entry point wiring all components
 
 ### Phase 2: Live Pipeline
@@ -54,5 +54,5 @@ Phases execute in numeric order: 1 → 2
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 1/4 | In Progress|  |
+| 1. Foundation | 3/4 | In Progress|  |
 | 2. Live Pipeline | 0/TBD | Not started | - |

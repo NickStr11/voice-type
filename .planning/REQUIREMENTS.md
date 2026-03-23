@@ -7,10 +7,10 @@
 
 ### Recording
 
-- [ ] **REC-01**: Global hotkey toggles recording start/stop
-- [ ] **REC-02**: Audio captured via sounddevice at 16kHz mono int16 (LINEAR16)
+- [x] **REC-01**: Global hotkey toggles recording start/stop
+- [x] **REC-02**: Audio captured via sounddevice at 16kHz mono int16 (LINEAR16)
 - [ ] **REC-03**: System tray icon changes state during recording
-- [ ] **REC-04**: Active window hwnd captured at recording stop (before processing)
+- [x] **REC-04**: Active window hwnd captured at recording stop (before processing)
 
 ### Transcription
 
@@ -31,7 +31,7 @@
 ### System
 
 - [ ] **SYS-01**: System tray icon with states (idle/recording/processing)
-- [ ] **SYS-02**: Microphone access check on first launch with clear error message
+- [x] **SYS-02**: Microphone access check on first launch with clear error message
 - [x] **SYS-03**: Configuration via .env or JSON (hotkey, GCP credentials path)
 
 ## v2 Requirements
@@ -67,10 +67,10 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| REC-01 | Phase 1 | Pending |
-| REC-02 | Phase 1 | Pending |
+| REC-01 | Phase 1 | Complete |
+| REC-02 | Phase 1 | Complete |
 | REC-03 | Phase 2 | Pending |
-| REC-04 | Phase 1 | Pending |
+| REC-04 | Phase 1 | Complete |
 | STT-01 | Phase 2 | Pending |
 | STT-02 | Phase 2 | Pending |
 | STT-03 | Phase 2 | Pending |
@@ -79,7 +79,7 @@
 | PST-01 | Phase 2 | Pending |
 | PST-02 | Phase 2 | Pending |
 | SYS-01 | Phase 2 | Pending |
-| SYS-02 | Phase 1 | Pending |
+| SYS-02 | Phase 1 | Complete |
 | SYS-03 | Phase 1 | Complete |
 
 **Coverage:**
