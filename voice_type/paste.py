@@ -64,10 +64,10 @@ class PasteService:
             _set_clipboard_text(text)
 
             # Step 4: Send Ctrl+V
-            win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)
-            win32api.keybd_event(ord("V"), 0, 0, 0)
-            win32api.keybd_event(ord("V"), 0, win32con.KEYEVENTF_KEYUP, 0)
-            win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
+            win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)  # pyright: ignore[reportUnknownMemberType]
+            win32api.keybd_event(ord("V"), 0, 0, 0)  # pyright: ignore[reportUnknownMemberType]
+            win32api.keybd_event(ord("V"), 0, win32con.KEYEVENTF_KEYUP, 0)  # pyright: ignore[reportUnknownMemberType]
+            win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)  # pyright: ignore[reportUnknownMemberType]
             time.sleep(0.05)  # allow paste to register before restoring clipboard
 
             logger.info(f"Pasted into HWND {hwnd}: {repr(text[:60])}")
@@ -83,9 +83,9 @@ class PasteService:
 def _get_clipboard_text() -> str | None:
     """Return current clipboard text, or None if clipboard has non-text content."""
     try:
-        win32clipboard.OpenClipboard()
+        win32clipboard.OpenClipboard()  # pyright: ignore[reportUnknownMemberType]
         try:
-            return str(win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT))
+            return str(win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT))  # pyright: ignore[reportUnknownMemberType]
         except TypeError:
             # No text in clipboard (image, file, or empty)
             return None
@@ -94,16 +94,16 @@ def _get_clipboard_text() -> str | None:
         return None
     finally:
         try:
-            win32clipboard.CloseClipboard()
+            win32clipboard.CloseClipboard()  # pyright: ignore[reportUnknownMemberType]
         except Exception:
             pass
 
 
 def _set_clipboard_text(text: str) -> None:
     """Write text to clipboard as CF_UNICODETEXT."""
-    win32clipboard.OpenClipboard()
+    win32clipboard.OpenClipboard()  # pyright: ignore[reportUnknownMemberType]
     try:
-        win32clipboard.EmptyClipboard()
-        win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
+        win32clipboard.EmptyClipboard()  # pyright: ignore[reportUnknownMemberType]
+        win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)  # pyright: ignore[reportUnknownMemberType]
     finally:
-        win32clipboard.CloseClipboard()
+        win32clipboard.CloseClipboard()  # pyright: ignore[reportUnknownMemberType]

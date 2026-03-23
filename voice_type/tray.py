@@ -77,7 +77,7 @@ class TrayIcon:
 
     def run_detached(self) -> None:
         """Start the tray icon in its own thread. Non-blocking."""
-        self._icon.run_detached()
+        self._icon.run_detached()  # pyright: ignore[reportUnknownMemberType]
         logger.info("TrayIcon running (detached)")
 
     def set_state(self, state: State) -> None:
