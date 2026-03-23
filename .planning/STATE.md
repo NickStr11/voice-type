@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 01-foundation/01-04-PLAN.md
-last_updated: "2026-03-23T15:23:16.038Z"
+stopped_at: Completed 02-live-pipeline/02-02-PLAN.md
+last_updated: "2026-03-23T15:41:24.950Z"
 progress:
   total_phases: 2
   completed_phases: 1
-  total_plans: 4
-  completed_plans: 4
+  total_plans: 7
+  completed_plans: 6
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-23)
 
 **Core value:** Press a key, speak, get clean text in the active window — as fast as Superwhisper
-**Current focus:** Phase 01 — foundation
+**Current focus:** Phase 02 — live-pipeline
 
 ## Current Position
 
-Phase: 01 (foundation) — EXECUTING
-Plan: 3 of 4 (completed)
+Phase: 02 (live-pipeline) — EXECUTING
+Plan: 2 of 3
 
 ## Performance Metrics
 
@@ -47,6 +47,7 @@ Plan: 3 of 4 (completed)
 
 *Updated after each plan completion*
 | Phase 01-foundation P04 | 15 | 2 tasks | 2 files |
+| Phase 02-live-pipeline P01 | 3 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -71,6 +72,9 @@ Recent decisions affecting current work:
 - [Phase 01-foundation]: AppController receives event loop as constructor arg — main() owns lifecycle
 - [Phase 01-foundation]: asyncio.Queue as event bus between pynput thread and controller — clean shutdown via enqueued 'shutdown' event
 - [Phase 01-foundation]: HWND captured before recorder.stop() await — guarantees original foreground window even if user switches during stop
+- [Phase 02-live-pipeline]: asyncio.to_thread for STT blocking GCP call — keeps event loop unblocked
+- [Phase 02-live-pipeline]: concurrent.futures wall-clock timeout for LLM — asyncio.wait_for cannot catch socket stalls
+- [Phase 02-live-pipeline]: thinking_budget=0 on Gemini 2.5 Flash — saves 1-3s latency on simple rewrite task
 
 ### Pending Todos
 
@@ -83,6 +87,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-23T15:22:37.343Z
-Stopped at: Completed 01-foundation/01-04-PLAN.md
+Last session: 2026-03-23T15:41:24.948Z
+Stopped at: Completed 02-live-pipeline/02-01-PLAN.md
 Resume file: None

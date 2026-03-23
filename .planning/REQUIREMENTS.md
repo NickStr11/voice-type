@@ -14,14 +14,14 @@
 
 ### Transcription
 
-- [ ] **STT-01**: Audio sent to Google Cloud STT V2 (Chirp 2) batch recognize
-- [ ] **STT-02**: Russian and English auto-detected without manual language switching
-- [ ] **STT-03**: Regional endpoint (us-central1-speech.googleapis.com) for minimum latency
+- [x] **STT-01**: Audio sent to Google Cloud STT V2 (Chirp 2) batch recognize
+- [x] **STT-02**: Russian and English auto-detected without manual language switching
+- [x] **STT-03**: Regional endpoint (us-central1-speech.googleapis.com) for minimum latency
 
 ### Cleanup
 
-- [ ] **LLM-01**: Transcribed text cleaned via Gemini Flash (punctuation, grammar, filler removal)
-- [ ] **LLM-02**: Wall-clock timeout on LLM call with fallback to raw STT text
+- [x] **LLM-01**: Transcribed text cleaned via Gemini Flash (punctuation, grammar, filler removal)
+- [x] **LLM-02**: Wall-clock timeout on LLM call with fallback to raw STT text
 
 ### Paste
 
@@ -71,11 +71,11 @@
 | REC-02 | Phase 1 | Complete |
 | REC-03 | Phase 2 | Pending |
 | REC-04 | Phase 1 | Complete |
-| STT-01 | Phase 2 | Pending |
-| STT-02 | Phase 2 | Pending |
-| STT-03 | Phase 2 | Pending |
-| LLM-01 | Phase 2 | Pending |
-| LLM-02 | Phase 2 | Pending |
+| STT-01 | Phase 2 | Complete |
+| STT-02 | Phase 2 | Complete |
+| STT-03 | Phase 2 | Complete |
+| LLM-01 | Phase 2 | Complete |
+| LLM-02 | Phase 2 | Complete |
 | PST-01 | Phase 2 | Pending |
 | PST-02 | Phase 2 | Pending |
 | SYS-01 | Phase 2 | Pending |
