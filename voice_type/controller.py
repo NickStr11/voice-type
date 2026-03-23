@@ -28,6 +28,7 @@ from loguru import logger
 from voice_type.audio import AudioRecorder, MicrophoneError
 from voice_type.cleanup import fast_clean
 from voice_type.config import AppConfig
+from voice_type.llm_local import LocalLLMClient
 from voice_type.hotkey import HotkeyListener
 from voice_type.llm import LLMClient
 from voice_type.paste import PasteService
@@ -68,7 +69,8 @@ class AppController:
         self._stt = STTClient(config)
         self._llm = LLMClient(project=config.gcp_project_id)
         self._paste = PasteService()
-        self.fast_mode: bool = False  # skip LLM cleanup when True
+        self._llm_local = LocalLLMClient()
+        self.mode: str = "full"  # "fast" | "local" | "full"
 
     def start_hotkey_listener(self) -> None:
         """Start the pynput hotkey listener in a daemon thread."""
@@ -150,10 +152,15 @@ class AppController:
                 logger.info("STT returned empty transcript -- nothing to paste")
                 return
 
-            # LLM cleanup -- fast regex cleanup if fast mode
-            if self.fast_mode:
+            # LLM cleanup -- depends on mode
+            if self.mode == "fast":
                 clean_text = fast_clean(raw_text)
-                logger.info(f"Fast mode -- regex cleanup: {repr(raw_text[:40])} -> {repr(clean_text[:40])}")
+                logger.info(f"Fast mode -- regex cleanup")
+            elif self.mode == "local":
+                clean_text = await asyncio.to_thread(self._llm_local.clean, raw_text)
+                if not clean_text.strip():
+                    clean_text = fast_clean(raw_text)
+                logger.info(f"Local mode -- Ollama cleanup")
             else:
                 clean_text = await asyncio.to_thread(self._llm.clean, raw_text)
                 if not clean_text.strip():

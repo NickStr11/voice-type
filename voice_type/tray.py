@@ -56,26 +56,26 @@ class TrayIcon:
         tray.set_state(State.RECORDING)
     """
 
-    def __init__(self, on_quit: Callable[[], None], on_toggle_fast: Callable[[], bool] | None = None) -> None:
+    def __init__(self, on_quit: Callable[[], None], on_set_mode: Callable[[str], None] | None = None) -> None:
         # Pre-generate all state icons at startup
         self._icons: dict[State, Image.Image] = {
             state: _make_icon_image(color)
             for state, color in _COLORS.items()
         }
-        self._fast_mode = False
+        self._current_mode = "full"
 
-        def _toggle_fast(_: object) -> None:
-            if on_toggle_fast is not None:
-                self._fast_mode = on_toggle_fast()
-                mode = "Fast (no LLM)" if self._fast_mode else "Full (with LLM)"
-                logger.info(f"Mode switched: {mode}")
+        def _set_mode(mode: str) -> Callable:
+            def handler(_: object) -> None:
+                self._current_mode = mode
+                if on_set_mode is not None:
+                    on_set_mode(mode)
+                logger.info(f"Mode: {mode}")
+            return handler
 
         menu = pystray.Menu(
-            pystray.MenuItem(
-                "Fast mode (no LLM)",
-                _toggle_fast,
-                checked=lambda _: self._fast_mode,
-            ),
+            pystray.MenuItem("Fast (regex)", _set_mode("fast"), checked=lambda _: self._current_mode == "fast"),
+            pystray.MenuItem("Local (Ollama)", _set_mode("local"), checked=lambda _: self._current_mode == "local"),
+            pystray.MenuItem("Full (Gemini)", _set_mode("full"), checked=lambda _: self._current_mode == "full"),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit VoiceType", lambda: on_quit()),
         )
