@@ -33,11 +33,19 @@ _TIMEOUT_S: Final[float] = 8.0
 class LLMClient:
     """Gemini Flash client for voice transcription cleanup."""
 
-    def __init__(self) -> None:
-        # genai.Client reads GOOGLE_APPLICATION_CREDENTIALS from env.
-        # Initialized once — reused across calls.
-        self._client = genai.Client()
-        logger.info(f"LLMClient ready — model: {_MODEL}, timeout: {_TIMEOUT_S}s")
+    def __init__(self, project: str | None = None) -> None:
+        import os
+
+        project = project or os.environ.get("GCP_PROJECT_ID")
+        # Use Vertex AI backend — works with service account credentials
+        # (GOOGLE_APPLICATION_CREDENTIALS). The default API key path doesn't
+        # support service accounts.
+        self._client = genai.Client(
+            vertexai=True,
+            project=project,
+            location="us-central1",
+        )
+        logger.info(f"LLMClient ready — model: {_MODEL}, timeout: {_TIMEOUT_S}s, project: {project}")
 
     def clean(self, raw_text: str) -> str:
         """Clean up raw STT transcription text via Gemini Flash.

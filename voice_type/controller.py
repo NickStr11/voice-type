@@ -65,7 +65,7 @@ class AppController:
 
         # Pipeline components -- initialized once, reused per recording
         self._stt = STTClient(config)
-        self._llm = LLMClient()
+        self._llm = LLMClient(project=config.gcp_project_id)
         self._paste = PasteService()
 
     def start_hotkey_listener(self) -> None:

@@ -25,7 +25,9 @@ class STTClient:
 
     def __init__(self, config: AppConfig) -> None:
         self._project_id = config.gcp_project_id
-        self._region = config.stt_region
+        # Chirp 2 available in us-central1. Single language_code but Chirp 2
+        # auto-detects mixed language speech within the same utterance.
+        self._region = config.stt_region  # default: us-central1
         self._client = SpeechClient(
             client_options=ClientOptions(
                 api_endpoint=f"{self._region}-speech.googleapis.com"
@@ -40,7 +42,7 @@ class STTClient:
                 sample_rate_hertz=16_000,
                 audio_channel_count=1,
             ),
-            language_codes=["ru-RU", "en-US"],
+            language_codes=["ru-RU"],
             model="chirp_2",
         )
         logger.info(f"STTClient ready — endpoint: {self._region}-speech.googleapis.com")
