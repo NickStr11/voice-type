@@ -1,0 +1,40 @@
+[project]
+name = "voice-type"
+version = "0.1.0"
+description = "Push-to-talk dictation for Windows — hotkey, speak, text appears in active window"
+requires-python = ">=3.12"
+dependencies = [
+    "sounddevice==0.5.5",
+    "numpy>=1.24",
+    "pynput==1.8.1",
+    "pystray==0.19.5",
+    "Pillow==12.1.1",
+    "pywin32==311",
+    "google-cloud-speech==2.37.0",
+    "google-genai==1.68.0",
+    "loguru>=0.7",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+voice-type = "voice_type.main:main"
+
+[tool.uv]
+dev-dependencies = [
+    "pyright>=1.1",
+    "ruff>=0.4",
+    "pytest>=8",
+]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+reportMissingImports = true
+reportMissingTypeStubs = false
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
