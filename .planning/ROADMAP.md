@@ -27,7 +27,13 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Audio is captured at 16kHz mono int16 while hotkey is active
   4. Active window handle is captured at hotkey-release (not at paste time)
   5. Config file controls hotkey and GCP credentials path; app fails clearly if credentials are missing
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Project scaffold: pyproject.toml deps + AppConfig dataclass with .env validation
+- [ ] 01-02-PLAN.md — AudioRecorder (16kHz mono int16) + microphone permission check
+- [ ] 01-03-PLAN.md — HotkeyListener (pynput GlobalHotKeys, no suppress) + window HWND capture
+- [ ] 01-04-PLAN.md — AppController state machine + main.py entry point wiring all components
 
 ### Phase 2: Live Pipeline
 **Goal**: The full pipeline runs end-to-end — recorded audio is transcribed via Chirp 2, cleaned by Gemini Flash, and pasted into the saved active window, while the tray icon reflects idle/recording/processing state throughout.
@@ -48,5 +54,5 @@ Phases execute in numeric order: 1 → 2
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/TBD | Not started | - |
+| 1. Foundation | 0/4 | Not started | - |
 | 2. Live Pipeline | 0/TBD | Not started | - |
