@@ -32,7 +32,7 @@
 
 - [ ] **SYS-01**: System tray icon with states (idle/recording/processing)
 - [ ] **SYS-02**: Microphone access check on first launch with clear error message
-- [ ] **SYS-03**: Configuration via .env or JSON (hotkey, GCP credentials path)
+- [x] **SYS-03**: Configuration via .env or JSON (hotkey, GCP credentials path)
 
 ## v2 Requirements
 
@@ -80,7 +80,7 @@
 | PST-02 | Phase 2 | Pending |
 | SYS-01 | Phase 2 | Pending |
 | SYS-02 | Phase 1 | Pending |
-| SYS-03 | Phase 1 | Pending |
+| SYS-03 | Phase 1 | Complete |
 
 **Coverage:**
 - v1 requirements: 14 total
