@@ -56,15 +56,28 @@ class TrayIcon:
         tray.set_state(State.RECORDING)
     """
 
-    def __init__(self, on_quit: Callable[[], None]) -> None:
+    def __init__(self, on_quit: Callable[[], None], on_toggle_fast: Callable[[], bool] | None = None) -> None:
         # Pre-generate all state icons at startup
         self._icons: dict[State, Image.Image] = {
             state: _make_icon_image(color)
             for state, color in _COLORS.items()
         }
+        self._fast_mode = False
+
+        def _toggle_fast(_: object) -> None:
+            if on_toggle_fast is not None:
+                self._fast_mode = on_toggle_fast()
+                mode = "Fast (no LLM)" if self._fast_mode else "Full (with LLM)"
+                logger.info(f"Mode switched: {mode}")
 
         menu = pystray.Menu(
-            pystray.MenuItem("Quit VoiceType", lambda: on_quit())
+            pystray.MenuItem(
+                "Fast mode (no LLM)",
+                _toggle_fast,
+                checked=lambda _: self._fast_mode,
+            ),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Quit VoiceType", lambda: on_quit()),
         )
 
         self._icon = pystray.Icon(

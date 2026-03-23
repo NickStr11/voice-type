@@ -65,7 +65,14 @@ def main() -> None:
         if controller_ref:
             controller_ref[0].shutdown()
 
-    tray = TrayIcon(on_quit=on_quit)
+    def on_toggle_fast() -> bool:
+        if controller_ref:
+            c = controller_ref[0]
+            c.fast_mode = not c.fast_mode
+            return c.fast_mode
+        return False
+
+    tray = TrayIcon(on_quit=on_quit, on_toggle_fast=on_toggle_fast)
 
     # Step 5: Create controller with tray reference
     controller = AppController(config, loop, tray=tray)

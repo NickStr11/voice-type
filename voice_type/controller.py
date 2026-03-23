@@ -26,6 +26,7 @@ import numpy.typing as npt
 from loguru import logger
 
 from voice_type.audio import AudioRecorder, MicrophoneError
+from voice_type.cleanup import fast_clean
 from voice_type.config import AppConfig
 from voice_type.hotkey import HotkeyListener
 from voice_type.llm import LLMClient
@@ -67,6 +68,7 @@ class AppController:
         self._stt = STTClient(config)
         self._llm = LLMClient(project=config.gcp_project_id)
         self._paste = PasteService()
+        self.fast_mode: bool = False  # skip LLM cleanup when True
 
     def start_hotkey_listener(self) -> None:
         """Start the pynput hotkey listener in a daemon thread."""
@@ -148,12 +150,15 @@ class AppController:
                 logger.info("STT returned empty transcript -- nothing to paste")
                 return
 
-            # LLM cleanup -- sync with internal wall-clock timeout; run in thread
-            clean_text = await asyncio.to_thread(self._llm.clean, raw_text)
-            # Safety guard: if LLM returned empty string, use raw STT text
-            if not clean_text.strip():
-                clean_text = raw_text
-                logger.warning("LLM returned empty text -- using raw STT output")
+            # LLM cleanup -- fast regex cleanup if fast mode
+            if self.fast_mode:
+                clean_text = fast_clean(raw_text)
+                logger.info(f"Fast mode -- regex cleanup: {repr(raw_text[:40])} -> {repr(clean_text[:40])}")
+            else:
+                clean_text = await asyncio.to_thread(self._llm.clean, raw_text)
+                if not clean_text.strip():
+                    clean_text = raw_text
+                    logger.warning("LLM returned empty text -- using raw STT output")
 
             # Paste into saved window
             await asyncio.to_thread(self._paste.paste, clean_text, self._target_hwnd)
