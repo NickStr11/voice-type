@@ -48,6 +48,7 @@ Plan: 2 of 3
 *Updated after each plan completion*
 | Phase 01-foundation P04 | 15 | 2 tasks | 2 files |
 | Phase 02-live-pipeline P01 | 3 | 2 tasks | 4 files |
+| Phase 02-live-pipeline P02 | 3 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -75,6 +76,10 @@ Recent decisions affecting current work:
 - [Phase 02-live-pipeline]: asyncio.to_thread for STT blocking GCP call — keeps event loop unblocked
 - [Phase 02-live-pipeline]: concurrent.futures wall-clock timeout for LLM — asyncio.wait_for cannot catch socket stalls
 - [Phase 02-live-pipeline]: thinking_budget=0 on Gemini 2.5 Flash — saves 1-3s latency on simple rewrite task
+- [02-02] pywin32 over pyautogui for paste — lower latency, reliable Unicode/Russian, CF_UNICODETEXT native
+- [02-02] 50ms sleep after SetForegroundWindow — Win32 focus change is async, keystrokes land in wrong window without delay
+- [02-02] Pre-generate pystray icons at TrayIcon init — PIL generation ~5ms each, too slow on state change
+- [02-02] run_detached() not run() — run() blocks calling thread (Pitfall 8)
 
 ### Pending Todos
 
@@ -87,6 +92,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-23T15:41:24.948Z
-Stopped at: Completed 02-live-pipeline/02-01-PLAN.md
+Last session: 2026-03-23T15:40:30Z
+Stopped at: Completed 02-live-pipeline/02-02-PLAN.md
 Resume file: None

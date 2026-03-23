@@ -9,7 +9,7 @@
 
 - [x] **REC-01**: Global hotkey toggles recording start/stop
 - [x] **REC-02**: Audio captured via sounddevice at 16kHz mono int16 (LINEAR16)
-- [ ] **REC-03**: System tray icon changes state during recording
+- [x] **REC-03**: System tray icon changes state during recording
 - [x] **REC-04**: Active window hwnd captured at recording stop (before processing)
 
 ### Transcription
@@ -25,12 +25,12 @@
 
 ### Paste
 
-- [ ] **PST-01**: Clean text pasted into saved active window via pywin32
-- [ ] **PST-02**: Target window focus restored via SetForegroundWindow before paste
+- [x] **PST-01**: Clean text pasted into saved active window via pywin32
+- [x] **PST-02**: Target window focus restored via SetForegroundWindow before paste
 
 ### System
 
-- [ ] **SYS-01**: System tray icon with states (idle/recording/processing)
+- [x] **SYS-01**: System tray icon with states (idle/recording/processing)
 - [x] **SYS-02**: Microphone access check on first launch with clear error message
 - [x] **SYS-03**: Configuration via .env or JSON (hotkey, GCP credentials path)
 
@@ -69,16 +69,16 @@
 |-------------|-------|--------|
 | REC-01 | Phase 1 | Complete |
 | REC-02 | Phase 1 | Complete |
-| REC-03 | Phase 2 | Pending |
+| REC-03 | Phase 2 | Complete |
 | REC-04 | Phase 1 | Complete |
 | STT-01 | Phase 2 | Complete |
 | STT-02 | Phase 2 | Complete |
 | STT-03 | Phase 2 | Complete |
 | LLM-01 | Phase 2 | Complete |
 | LLM-02 | Phase 2 | Complete |
-| PST-01 | Phase 2 | Pending |
-| PST-02 | Phase 2 | Pending |
-| SYS-01 | Phase 2 | Pending |
+| PST-01 | Phase 2 | Complete |
+| PST-02 | Phase 2 | Complete |
+| SYS-01 | Phase 2 | Complete |
 | SYS-02 | Phase 1 | Complete |
 | SYS-03 | Phase 1 | Complete |
 
