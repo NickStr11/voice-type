@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: unknown
-stopped_at: Completed 02-live-pipeline/02-02-PLAN.md
-last_updated: "2026-03-23T15:41:24.950Z"
+status: complete
+stopped_at: Completed 02-live-pipeline/02-03-PLAN.md
+last_updated: "2026-03-23T15:48:37.737Z"
 progress:
   total_phases: 2
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 7
-  completed_plans: 6
+  completed_plans: 7
 ---
 
 # Project State
@@ -23,8 +23,8 @@ See: .planning/PROJECT.md (updated 2026-03-23)
 
 ## Current Position
 
-Phase: 02 (live-pipeline) — EXECUTING
-Plan: 2 of 3
+Phase: 02 (live-pipeline) — COMPLETE
+Plan: 3 of 3
 
 ## Performance Metrics
 
@@ -49,6 +49,7 @@ Plan: 2 of 3
 | Phase 01-foundation P04 | 15 | 2 tasks | 2 files |
 | Phase 02-live-pipeline P01 | 3 | 2 tasks | 4 files |
 | Phase 02-live-pipeline P02 | 3 | 2 tasks | 4 files |
+| Phase 02-live-pipeline P03 | 4 | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -80,6 +81,9 @@ Recent decisions affecting current work:
 - [02-02] 50ms sleep after SetForegroundWindow — Win32 focus change is async, keystrokes land in wrong window without delay
 - [02-02] Pre-generate pystray icons at TrayIcon init — PIL generation ~5ms each, too slow on state change
 - [02-02] run_detached() not run() — run() blocks calling thread (Pitfall 8)
+- [Phase 02-live-pipeline]: State enum moved to voice_type/states.py to break controller<->tray circular import
+- [Phase 02-live-pipeline]: conftest.py installs shared win32 mocks before test imports -- prevents test ordering failures
+- [Phase 02-live-pipeline]: finally block in _stop_and_process guarantees IDLE reset even on pipeline error
 
 ### Pending Todos
 
@@ -92,6 +96,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-23T15:40:30Z
-Stopped at: Completed 02-live-pipeline/02-02-PLAN.md
+Last session: 2026-03-23T15:48:37.735Z
+Stopped at: Completed 02-live-pipeline/02-03-PLAN.md
 Resume file: None

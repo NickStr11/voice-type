@@ -13,7 +13,7 @@ VoiceType ships in two phases. Phase 1 establishes the project scaffold and the 
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation** - Project scaffold, hotkey + audio capture, active window tracking, config (completed 2026-03-23)
-- [ ] **Phase 2: Live Pipeline** - STT + LLM cleanup + paste + tray feedback — full loop end-to-end
+- [x] **Phase 2: Live Pipeline** - STT + LLM cleanup + paste + tray feedback — full loop end-to-end (completed 2026-03-23)
 
 ## Phase Details
 
@@ -60,4 +60,4 @@ Phases execute in numeric order: 1 → 2
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 4/4 | Complete   | 2026-03-23 |
-| 2. Live Pipeline | 2/3 | In Progress|  |
+| 2. Live Pipeline | 3/3 | Complete   | 2026-03-23 |
