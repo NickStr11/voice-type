@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 01-foundation/01-03-PLAN.md
-last_updated: "2026-03-23T14:58:04.931Z"
+stopped_at: Completed 01-foundation/01-04-PLAN.md
+last_updated: "2026-03-23T15:22:37.345Z"
 progress:
   total_phases: 2
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 4
-  completed_plans: 3
+  completed_plans: 4
 ---
 
 # Project State
@@ -46,6 +46,7 @@ Plan: 3 of 4 (completed)
 - Trend: —
 
 *Updated after each plan completion*
+| Phase 01-foundation P04 | 15 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -67,6 +68,9 @@ Recent decisions affecting current work:
 - [Phase 01-02]: channels=1 always — stereo causes PortAudioError -9998 on mono-only mics (Pitfall 7)
 - [Phase 01-02]: device=None — use OS default mic, stable across USB/BT/built-in changes
 - [Phase 01-02]: PortAudio -9999 translated to Windows Privacy & Security Microphone settings path (SYS-02)
+- [Phase 01-foundation]: AppController receives event loop as constructor arg — main() owns lifecycle
+- [Phase 01-foundation]: asyncio.Queue as event bus between pynput thread and controller — clean shutdown via enqueued 'shutdown' event
+- [Phase 01-foundation]: HWND captured before recorder.stop() await — guarantees original foreground window even if user switches during stop
 
 ### Pending Todos
 
@@ -79,6 +83,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-23
-Stopped at: Completed 01-foundation/01-03-PLAN.md
+Last session: 2026-03-23T15:22:37.343Z
+Stopped at: Completed 01-foundation/01-04-PLAN.md
 Resume file: None
