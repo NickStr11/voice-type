@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+dist/
+build/
+*.egg-info/
+.ruff_cache/
+
+# Secrets — NEVER commit these
+.env
+*.json
+!pyproject.toml
+# Allow specific JSON files if needed by adding exceptions below
+
+# Runtime data
+runtime/
+*.log
+
+# IDE
+.vscode/
+.idea/
