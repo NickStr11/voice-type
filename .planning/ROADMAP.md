@@ -12,7 +12,7 @@ VoiceType ships in two phases. Phase 1 establishes the project scaffold and the 
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [x] **Phase 1: Foundation** - Project scaffold, hotkey + audio capture, active window tracking, config (completed 2026-03-23)
+- [x] **Phase 1: Foundation** - Project scaffold, hotkey + audio capture, active window tracking, config (completed 2026-03-23)
 - [ ] **Phase 2: Live Pipeline** - STT + LLM cleanup + paste + tray feedback — full loop end-to-end
 
 ## Phase Details
@@ -33,7 +33,7 @@ Plans:
 - [x] 01-01-PLAN.md — Project scaffold: pyproject.toml deps + AppConfig dataclass with .env validation
 - [x] 01-02-PLAN.md — AudioRecorder (16kHz mono int16) + microphone permission check
 - [x] 01-03-PLAN.md — HotkeyListener (pynput GlobalHotKeys, no suppress) + window HWND capture
-- [ ] 01-04-PLAN.md — AppController state machine + main.py entry point wiring all components
+- [x] 01-04-PLAN.md — AppController state machine + main.py entry point wiring all components
 
 ### Phase 2: Live Pipeline
 **Goal**: The full pipeline runs end-to-end — recorded audio is transcribed via Chirp 2, cleaned by Gemini Flash, and pasted into the saved active window, while the tray icon reflects idle/recording/processing state throughout.
@@ -45,7 +45,12 @@ Plans:
   3. Gemini cleanup removes filler words and adds punctuation; raw STT text is used as fallback if LLM times out
   4. Tray icon shows distinct states for idle, recording, and processing — updates reflect real pipeline state
   5. Clipboard contents are preserved (restored after paste)
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — STTClient (Chirp 2 regional) + LLMClient (Gemini Flash with wall-clock timeout)
+- [ ] 02-02-PLAN.md — PasteService (SetForegroundWindow + clipboard save/restore + Ctrl+V) + TrayIcon (3-state pystray)
+- [ ] 02-03-PLAN.md — Wire pipeline into AppController + update main.py with tray startup
 
 ## Progress
 
@@ -55,4 +60,4 @@ Phases execute in numeric order: 1 → 2
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 4/4 | Complete   | 2026-03-23 |
-| 2. Live Pipeline | 0/TBD | Not started | - |
+| 2. Live Pipeline | 0/3 | Not started | - |
