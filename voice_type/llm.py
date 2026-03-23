@@ -22,9 +22,14 @@ from google.genai import types
 from loguru import logger
 
 _CLEANUP_PROMPT_TEMPLATE: Final[str] = (
-    "Clean up this voice transcription. Fix punctuation, capitalization, and grammar. "
-    "Remove filler words (um, uh, ну, эм, короче, вот). "
-    "Output only the corrected text, nothing else.\n\n{text}"
+    "Clean up this voice transcription. Rules:\n"
+    "1. Fix punctuation, capitalization, and grammar.\n"
+    "2. Remove filler words (um, uh, ну, эм, короче, вот, типа, как бы, в общем).\n"
+    "3. Split into paragraphs by topic — add blank lines between logical blocks.\n"
+    "4. When listing items (во-первых, во-вторых, 1, 2, 3, first, second), "
+    "put each item on a new line.\n"
+    "5. Keep the original meaning and style. Do not add or invent content.\n"
+    "6. Output only the corrected text, nothing else.\n\n{text}"
 )
 _MODEL: Final[str] = "gemini-2.5-flash"
 _TIMEOUT_S: Final[float] = 8.0
