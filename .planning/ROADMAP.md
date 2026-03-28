@@ -13,7 +13,7 @@ VoiceType ships in two phases. Phase 1 establishes the project scaffold and the 
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation** - Project scaffold, hotkey + audio capture, active window tracking, config (completed 2026-03-23)
-- [x] **Phase 2: Live Pipeline** - STT + LLM cleanup + paste + tray feedback — full loop end-to-end (completed 2026-03-23)
+- [x] **Phase 2: Live Pipeline** - STT + LLM cleanup + paste + tray feedback — full loop end-to-end (completed 2026-03-23)
 
 ## Phase Details
 
@@ -55,9 +55,21 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2
+Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 4/4 | Complete   | 2026-03-23 |
 | 2. Live Pipeline | 3/3 | Complete   | 2026-03-23 |
+| 3. Local Whisper STT | 0/2 | Planned | — |
+
+### Phase 3: Local Whisper STT backend (faster-whisper large-v3) with provider selection in tray menu
+
+**Goal:** Local Whisper STT backend works as an alternative to Google Cloud Chirp 3 — user selects provider from tray menu, recordings are transcribed locally via faster-whisper large-v3-turbo with auto language detection, and GCP credentials are no longer required when using local mode.
+**Requirements**: STT-LOCAL-01, STT-LOCAL-02, STT-LOCAL-03, STT-LOCAL-04, PROV-01, PROV-02, TRAY-01, CONFIG-01
+**Depends on:** Phase 2
+**Plans:** 2 plans
+
+Plans:
+- [ ] 03-01-PLAN.md — AppConfig extension (stt_provider, whisper_model, optional GCP) + WhisperSTTClient module
+- [ ] 03-02-PLAN.md — Tray STT Provider submenu + controller provider delegation + main.py wiring
