@@ -61,14 +61,14 @@ Phases execute in numeric order: 1 → 2 → 3
 |-------|----------------|--------|-----------|
 | 1. Foundation | 4/4 | Complete   | 2026-03-23 |
 | 2. Live Pipeline | 3/3 | Complete   | 2026-03-23 |
-| 3. Local Whisper STT | 1/2 | Executing | — |
+| 3. Local Whisper STT | 2/2 | Complete   | 2026-03-28 |
 
 ### Phase 3: Local Whisper STT backend (faster-whisper large-v3) with provider selection in tray menu
 
 **Goal:** Local Whisper STT backend works as an alternative to Google Cloud Chirp 3 — user selects provider from tray menu, recordings are transcribed locally via faster-whisper large-v3-turbo with auto language detection, and GCP credentials are no longer required when using local mode.
 **Requirements**: STT-LOCAL-01, STT-LOCAL-02, STT-LOCAL-03, STT-LOCAL-04, PROV-01, PROV-02, TRAY-01, CONFIG-01
 **Depends on:** Phase 2
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 
 Plans:
 - [x] 03-01-PLAN.md — AppConfig extension (stt_provider, whisper_model, optional GCP) + WhisperSTTClient module

@@ -42,9 +42,9 @@
 - [x] **STT-LOCAL-02**: Model loads lazily on first recognize() call (not at __init__)
 - [x] **STT-LOCAL-03**: int16 audio bytes converted to float32 normalized [-1, 1] before transcription
 - [x] **STT-LOCAL-04**: vad_filter=True and language=None (auto-detect) used in transcription
-- [ ] **PROV-01**: User can select STT provider (cloud/local) from tray menu
-- [ ] **PROV-02**: Provider selection persists across app restart
-- [ ] **TRAY-01**: Tray menu has STT Provider submenu with checkmarks showing active provider
+- [x] **PROV-01**: User can select STT provider (cloud/local) from tray menu
+- [x] **PROV-02**: Provider selection persists across app restart
+- [x] **TRAY-01**: Tray menu has STT Provider submenu with checkmarks showing active provider
 
 ### Config
 
@@ -103,9 +103,9 @@
 | STT-LOCAL-03 | Phase 3 Plan 01 | Complete |
 | STT-LOCAL-04 | Phase 3 Plan 01 | Complete |
 | CONFIG-01 | Phase 3 Plan 01 | Complete |
-| PROV-01 | Phase 3 Plan 02 | Pending |
-| PROV-02 | Phase 3 Plan 02 | Pending |
-| TRAY-01 | Phase 3 Plan 02 | Pending |
+| PROV-01 | Phase 3 Plan 02 | Complete |
+| PROV-02 | Phase 3 Plan 02 | Complete |
+| TRAY-01 | Phase 3 Plan 02 | Complete |
 
 **Coverage:**
 - v1 requirements: 14 total — all complete
