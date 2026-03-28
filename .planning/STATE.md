@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 02-live-pipeline/02-03-PLAN.md
-last_updated: "2026-03-23T15:49:26.685Z"
+stopped_at: Completed 03-local-whisper-stt-backend/03-01-PLAN.md
+last_updated: "2026-03-28T19:28:56Z"
 progress:
-  total_phases: 2
+  total_phases: 3
   completed_phases: 2
-  total_plans: 7
-  completed_plans: 7
+  total_plans: 9
+  completed_plans: 8
 ---
 
 # Project State
@@ -19,12 +19,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-23)
 
 **Core value:** Press a key, speak, get clean text in the active window — as fast as Superwhisper
-**Current focus:** Phase 02 — live-pipeline
+**Current focus:** Phase 03 — local-whisper-stt-backend
 
 ## Current Position
 
-Phase: 02 (live-pipeline) — COMPLETE
-Plan: 3 of 3
+Phase: 03 (local-whisper-stt-backend) — EXECUTING
+Plan: 2 of 2
 
 ## Performance Metrics
 
@@ -50,8 +50,13 @@ Plan: 3 of 3
 | Phase 02-live-pipeline P01 | 3 | 2 tasks | 4 files |
 | Phase 02-live-pipeline P02 | 3 | 2 tasks | 4 files |
 | Phase 02-live-pipeline P03 | 4 | 2 tasks | 7 files |
+| Phase 03-local-whisper P01 | 3 | 2 tasks | 7 files |
 
 ## Accumulated Context
+
+### Roadmap Evolution
+
+- Phase 3 added: Local Whisper STT backend (faster-whisper large-v3) with provider selection in tray menu
 
 ### Decisions
 
@@ -84,6 +89,10 @@ Recent decisions affecting current work:
 - [Phase 02-live-pipeline]: State enum moved to voice_type/states.py to break controller<->tray circular import
 - [Phase 02-live-pipeline]: conftest.py installs shared win32 mocks before test imports -- prevents test ordering failures
 - [Phase 02-live-pipeline]: finally block in _stop_and_process guarantees IDLE reset even on pipeline error
+- [03-01] device="cpu" + compute_type="int8" for WhisperModel — AMD RX 7800 XT has no CUDA; explicit int8 avoids float32 default (3-5x slower)
+- [03-01] language=None in WhisperSTTClient.transcribe — auto-detect handles mixed ru/en without config
+- [03-01] Lazy model loading with threading.Lock double-checked locking — WhisperModel init takes 3-10s, must not block startup
+- [03-01] load_dotenv patched in config tests — real .env leaks GCP creds into cleared env without this
 
 ### Pending Todos
 
@@ -96,6 +105,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-23T15:48:37.735Z
-Stopped at: Completed 02-live-pipeline/02-03-PLAN.md
+Last session: 2026-03-28T19:28:56Z
+Stopped at: Completed 03-local-whisper-stt-backend/03-01-PLAN.md
 Resume file: None

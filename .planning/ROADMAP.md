@@ -61,7 +61,7 @@ Phases execute in numeric order: 1 → 2 → 3
 |-------|----------------|--------|-----------|
 | 1. Foundation | 4/4 | Complete   | 2026-03-23 |
 | 2. Live Pipeline | 3/3 | Complete   | 2026-03-23 |
-| 3. Local Whisper STT | 0/2 | Planned | — |
+| 3. Local Whisper STT | 1/2 | Executing | — |
 
 ### Phase 3: Local Whisper STT backend (faster-whisper large-v3) with provider selection in tray menu
 
@@ -71,5 +71,5 @@ Phases execute in numeric order: 1 → 2 → 3
 **Plans:** 2 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — AppConfig extension (stt_provider, whisper_model, optional GCP) + WhisperSTTClient module
+- [x] 03-01-PLAN.md — AppConfig extension (stt_provider, whisper_model, optional GCP) + WhisperSTTClient module
 - [ ] 03-02-PLAN.md — Tray STT Provider submenu + controller provider delegation + main.py wiring

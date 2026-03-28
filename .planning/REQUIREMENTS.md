@@ -34,6 +34,22 @@
 - [x] **SYS-02**: Microphone access check on first launch with clear error message
 - [x] **SYS-03**: Configuration via .env or JSON (hotkey, GCP credentials path)
 
+## Phase 3 Requirements — Local Whisper STT
+
+### Local STT
+
+- [x] **STT-LOCAL-01**: WhisperSTTClient with async recognize(audio_bytes) -> str interface matching STTClient
+- [x] **STT-LOCAL-02**: Model loads lazily on first recognize() call (not at __init__)
+- [x] **STT-LOCAL-03**: int16 audio bytes converted to float32 normalized [-1, 1] before transcription
+- [x] **STT-LOCAL-04**: vad_filter=True and language=None (auto-detect) used in transcription
+- [ ] **PROV-01**: User can select STT provider (cloud/local) from tray menu
+- [ ] **PROV-02**: Provider selection persists across app restart
+- [ ] **TRAY-01**: Tray menu has STT Provider submenu with checkmarks showing active provider
+
+### Config
+
+- [x] **CONFIG-01**: AppConfig accepts stt_provider and whisper_model fields; GCP credentials optional when provider=local
+
 ## v2 Requirements
 
 ### Modes
@@ -82,11 +98,20 @@
 | SYS-02 | Phase 1 | Complete |
 | SYS-03 | Phase 1 | Complete |
 
+| STT-LOCAL-01 | Phase 3 Plan 01 | Complete |
+| STT-LOCAL-02 | Phase 3 Plan 01 | Complete |
+| STT-LOCAL-03 | Phase 3 Plan 01 | Complete |
+| STT-LOCAL-04 | Phase 3 Plan 01 | Complete |
+| CONFIG-01 | Phase 3 Plan 01 | Complete |
+| PROV-01 | Phase 3 Plan 02 | Pending |
+| PROV-02 | Phase 3 Plan 02 | Pending |
+| TRAY-01 | Phase 3 Plan 02 | Pending |
+
 **Coverage:**
-- v1 requirements: 14 total
-- Mapped to phases: 14
+- v1 requirements: 14 total — all complete
+- Phase 3 requirements: 8 total — 5 complete (Plan 01 done), 3 pending (Plan 02)
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-23*
-*Last updated: 2026-03-23 — traceability filled after roadmap creation*
+*Last updated: 2026-03-28 — Phase 3 Plan 01 requirements added and marked complete*
