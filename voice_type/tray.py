@@ -14,11 +14,11 @@ Design decisions:
 """
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 import pystray  # type: ignore[import-untyped]
-from PIL import Image, ImageDraw
 from loguru import logger
+from PIL import Image, ImageDraw
 
 from voice_type.states import State
 
@@ -56,28 +56,78 @@ class TrayIcon:
         tray.set_state(State.RECORDING)
     """
 
-    def __init__(self, on_quit: Callable[[], None], on_set_mode: Callable[[str], None] | None = None) -> None:
+    def __init__(
+        self,
+        on_quit: Callable[[], None],
+        on_set_mode: Callable[[str], None] | None = None,
+        on_set_stt_provider: Callable[[str], None] | None = None,
+        initial_stt_provider: str = "cloud",
+    ) -> None:
         # Pre-generate all state icons at startup
         self._icons: dict[State, Image.Image] = {
             state: _make_icon_image(color)
             for state, color in _COLORS.items()
         }
-        self._current_mode = "full"
+        self._current_mode = "auto"
+        self._current_stt_provider = initial_stt_provider
 
-        def _set_mode(mode: str) -> Callable:
+        def _set_mode(mode: str) -> Callable[[object], None]:
             def handler(_: object) -> None:
                 self._current_mode = mode
                 if on_set_mode is not None:
                     on_set_mode(mode)
                 logger.info(f"Mode: {mode}")
+
             return handler
 
+        def _is_mode(mode: str) -> Callable[[object], bool]:
+            def checker(_: object) -> bool:
+                return self._current_mode == mode
+
+            return checker
+
+        def _set_stt_provider(provider: str) -> Callable[[object], None]:
+            def handler(_: object) -> None:
+                self._current_stt_provider = provider
+                if on_set_stt_provider is not None:
+                    on_set_stt_provider(provider)
+                logger.info(f"STT Provider: {provider}")
+
+            return handler
+
+        def _is_stt_provider(provider: str) -> Callable[[object], bool]:
+            def checker(_: object) -> bool:
+                return self._current_stt_provider == provider
+
+            return checker
+
+        def _quit(_: object) -> None:
+            on_quit()
+
+        stt_submenu = pystray.Menu(
+            pystray.MenuItem(
+                "Local (Whisper)",
+                _set_stt_provider("local"),
+                checked=_is_stt_provider("local"),
+                radio=True,
+            ),
+            pystray.MenuItem(
+                "Cloud (Chirp 3)",
+                _set_stt_provider("cloud"),
+                checked=_is_stt_provider("cloud"),
+                radio=True,
+            ),
+        )
+
         menu = pystray.Menu(
-            pystray.MenuItem("Fast (regex)", _set_mode("fast"), checked=lambda _: self._current_mode == "fast"),
-            pystray.MenuItem("Local (Ollama)", _set_mode("local"), checked=lambda _: self._current_mode == "local"),
-            pystray.MenuItem("Full (Gemini)", _set_mode("full"), checked=lambda _: self._current_mode == "full"),
+            pystray.MenuItem("Auto", _set_mode("auto"), checked=_is_mode("auto")),
+            pystray.MenuItem("Fast (regex)", _set_mode("fast"), checked=_is_mode("fast")),
+            pystray.MenuItem("Local (Ollama)", _set_mode("local"), checked=_is_mode("local")),
+            pystray.MenuItem("Full (Gemini)", _set_mode("full"), checked=_is_mode("full")),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Quit VoiceType", lambda: on_quit()),
+            pystray.MenuItem("STT Provider", stt_submenu),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Quit VoiceType", _quit),
         )
 
         self._icon = pystray.Icon(
