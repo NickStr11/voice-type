@@ -13,7 +13,7 @@ Startup sequence:
 
 Threading model:
     - Main thread: asyncio event loop (controller.run())
-    - Daemon thread: pynput hotkey listener (HotkeyListener)
+    - Daemon thread: Win32 hotkey listener (HotkeyListener)
     - Daemon thread: pystray icon (run_detached manages its own thread)
     - PortAudio callback thread: managed by sounddevice internally
 
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 
 from loguru import logger
 
@@ -38,6 +39,9 @@ from voice_type.tray import TrayIcon
 
 def main() -> None:
     """Entry point for `uv run voice-type` or `python -m voice_type.main`."""
+    runtime_dir = Path(__file__).parent.parent / "runtime"
+    runtime_dir.mkdir(exist_ok=True)
+    logger.add(runtime_dir / "voicetype.log", level="DEBUG", encoding="utf-8")
 
     # Step 1: Load configuration -- exits 1 on bad config (SYS-03)
     config = load_config()
@@ -69,7 +73,16 @@ def main() -> None:
         if controller_ref:
             controller_ref[0].mode = mode
 
-    tray = TrayIcon(on_quit=on_quit, on_set_mode=on_set_mode)
+    def on_set_stt_provider(provider: str) -> None:
+        if controller_ref:
+            controller_ref[0].stt_provider = provider
+
+    tray = TrayIcon(
+        on_quit=on_quit,
+        on_set_mode=on_set_mode,
+        on_set_stt_provider=on_set_stt_provider,
+        initial_stt_provider=config.stt_provider,
+    )
 
     # Step 5: Create controller with tray reference
     controller = AppController(config, loop, tray=tray)

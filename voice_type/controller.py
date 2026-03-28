@@ -6,7 +6,7 @@ State machine:
                                 (hotkey during PROCESSING is ignored)
 
 Thread safety:
-    on_hotkey() is called from pynput's listener thread via
+    on_hotkey() is called from the hotkey listener thread via
     loop.call_soon_threadsafe(). All state transitions happen inside
     the asyncio event loop -- no locks needed for state itself.
 
@@ -19,21 +19,22 @@ Pipeline (Phase 2):
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+import time as _time
 
 import numpy as np
 import numpy.typing as npt
 from loguru import logger
 
-from voice_type.audio import AudioRecorder, MicrophoneError
+from voice_type.audio import AudioRecorder, MicrophoneError, trim_silence
 from voice_type.cleanup import fast_clean
 from voice_type.config import AppConfig
-from voice_type.llm_local import LocalLLMClient
 from voice_type.hotkey import HotkeyListener
 from voice_type.llm import LLMClient
+from voice_type.llm_local import LocalLLMClient
 from voice_type.paste import PasteService
 from voice_type.states import State
 from voice_type.stt import STTClient
+from voice_type.stt_whisper import WhisperSTTClient
 from voice_type.tray import TrayIcon
 from voice_type.window import capture_active_window
 
@@ -54,7 +55,7 @@ class AppController:
         self,
         config: AppConfig,
         loop: asyncio.AbstractEventLoop,
-        tray: Optional[TrayIcon] = None,
+        tray: TrayIcon | None = None,
     ) -> None:
         self._config = config
         self._loop = loop
@@ -66,14 +67,26 @@ class AppController:
         self._tray = tray
 
         # Pipeline components -- initialized once, reused per recording
-        self._stt = STTClient(config)
+        self._stt = STTClient(config) if config.gcp_credentials_path is not None else None
+        self._stt_whisper = WhisperSTTClient(config)
         self._llm = LLMClient(project=config.gcp_project_id)
         self._paste = PasteService()
         self._llm_local = LocalLLMClient()
-        self.mode: str = "full"  # "fast" | "local" | "full"
+        self.mode: str = "auto"  # "auto" | "fast" | "local" | "full"
+        self.stt_provider: str = config.stt_provider  # "cloud" | "local"
+
+    def _resolve_cleanup_mode(self, duration_s: float, raw_text: str) -> str:
+        """Select cleanup mode for the current utterance."""
+        if self.mode != "auto":
+            return self.mode
+
+        if duration_s <= 6.0 or len(raw_text) <= 220:
+            return "fast"
+
+        return "full"
 
     def start_hotkey_listener(self) -> None:
-        """Start the pynput hotkey listener in a daemon thread."""
+        """Start the hotkey listener in a daemon thread."""
         self._hotkey_listener.start()
         logger.info(f"Hotkey listener started -- hotkey: {self._config.hotkey}")
 
@@ -82,9 +95,9 @@ class AppController:
         self._hotkey_listener.stop()
 
     def _on_hotkey_from_thread(self) -> None:
-        """Callback fired from pynput's listener thread.
+        """Callback fired from the hotkey listener thread.
 
-        Bridges the pynput thread to the asyncio event loop via
+        Bridges the hotkey thread to the asyncio event loop via
         call_soon_threadsafe -- the only safe way to enqueue work
         from a non-asyncio thread into an asyncio loop.
         """
@@ -119,6 +132,7 @@ class AppController:
     async def _start_recording(self) -> None:
         """IDLE -> RECORDING: open mic stream, update state and tray."""
         logger.info("Recording started")
+
         try:
             await asyncio.to_thread(self._recorder.start)
         except MicrophoneError as exc:
@@ -140,35 +154,67 @@ class AppController:
         logger.info(f"Recording stopped -- target window HWND: {self._target_hwnd}")
 
         try:
+            t0 = _time.perf_counter()
+
             # Stop audio capture
             audio: npt.NDArray[np.int16] = await asyncio.to_thread(self._recorder.stop)
-            audio_bytes = audio.tobytes()
-            duration_s = len(audio) / 16_000
-            logger.info(f"Audio: {duration_s:.2f}s, {len(audio_bytes)} bytes")
+            raw_duration_s = len(audio) / 16_000
+            t_stop = _time.perf_counter()
+            logger.info(
+                f"Audio captured: {raw_duration_s:.2f}s, {len(audio) * 2} bytes "
+                f"[{t_stop - t0:.2f}s to stop mic]"
+            )
 
-            # STT -- async coroutine (already runs to_thread internally)
-            raw_text = await self._stt.recognize(audio_bytes)
-            if not raw_text:
-                logger.info("STT returned empty transcript -- nothing to paste")
+            trimmed_audio = trim_silence(audio)
+            trimmed_duration_s = len(trimmed_audio) / 16_000
+            if len(trimmed_audio) != len(audio):
+                logger.info(f"Trimmed silence: {raw_duration_s:.2f}s -> {trimmed_duration_s:.2f}s")
+            if not len(trimmed_audio):
+                logger.info("Audio is silence after trimming -- nothing to transcribe")
                 return
 
-            # LLM cleanup -- depends on mode
-            if self.mode == "fast":
-                clean_text = fast_clean(raw_text)
-                logger.info(f"Fast mode -- regex cleanup")
-            elif self.mode == "local":
-                clean_text = await asyncio.to_thread(self._llm_local.clean, raw_text)
-                if not clean_text.strip():
-                    clean_text = fast_clean(raw_text)
-                logger.info(f"Local mode -- Ollama cleanup")
-            else:
+            # STT + LLM cleanup — batch STT (streaming Chirp 3 is slower)
+            audio_bytes = trimmed_audio.tobytes()
+            raw_text = await self._transcribe(audio_bytes)
+            t_stt = _time.perf_counter()
+            logger.info(f"Batch STT done [{t_stt - t_stop:.2f}s]")
+
+            if not raw_text:
+                logger.info("STT returned empty -- nothing to paste")
+                return
+
+            cleanup_mode = self._resolve_cleanup_mode(trimmed_duration_s, raw_text)
+            logger.info(
+                f"Cleanup mode: {cleanup_mode} "
+                f"(selected={self.mode}, speech={trimmed_duration_s:.2f}s, chars={len(raw_text)})"
+            )
+
+            if cleanup_mode == "full":
                 clean_text = await asyncio.to_thread(self._llm.clean, raw_text)
                 if not clean_text.strip():
                     clean_text = raw_text
-                    logger.warning("LLM returned empty text -- using raw STT output")
+                    logger.warning("LLM returned empty -- using raw STT")
+                t_llm = _time.perf_counter()
+                logger.info(f"Gemini cleanup [{t_llm - t_stt:.2f}s]")
+            elif cleanup_mode == "fast":
+                clean_text = fast_clean(raw_text)
+                t_llm = _time.perf_counter()
+                logger.info(f"Fast cleanup [{t_llm - t_stt:.3f}s]")
+            else:
+                clean_text = await asyncio.to_thread(self._llm_local.clean, raw_text)
+                if not clean_text.strip():
+                    clean_text = fast_clean(raw_text)
+                t_llm = _time.perf_counter()
+                logger.info(f"Local cleanup [{t_llm - t_stt:.2f}s]")
 
             # Paste into saved window
             await asyncio.to_thread(self._paste.paste, clean_text, self._target_hwnd)
+            t_end = _time.perf_counter()
+            logger.info(
+                f"PIPELINE TOTAL: {t_end - t0:.2f}s "
+                f"(mic:{t_stop - t0:.2f} stt:{t_stt - t_stop:.2f} "
+                f"llm:{t_llm - t_stt:.2f} paste:{t_end - t_llm:.2f})"
+            )
 
         except Exception as exc:
             logger.error(f"Pipeline error: {exc}")
@@ -177,6 +223,23 @@ class AppController:
             if self._tray is not None:
                 self._tray.set_state(State.IDLE)
             logger.info("State: IDLE -- ready for next recording")
+
+    async def _transcribe(self, audio_bytes: bytes) -> str:
+        """Delegate transcription to the active STT provider.
+
+        Routes to WhisperSTTClient when stt_provider is 'local', or to
+        STTClient when 'cloud'. Raises RuntimeError if cloud is selected
+        but GCP credentials were not configured.
+        """
+        if self.stt_provider == "local":
+            return await self._stt_whisper.recognize(audio_bytes)
+        if self._stt is None:
+            raise RuntimeError(
+                "Cloud STT selected but GCP credentials not configured. "
+                "Set GOOGLE_APPLICATION_CREDENTIALS and GCP_PROJECT_ID in .env, "
+                "or switch to local provider."
+            )
+        return await self._stt.recognize(audio_bytes)
 
     def shutdown(self) -> None:
         """Enqueue a shutdown event to stop the run() loop."""
