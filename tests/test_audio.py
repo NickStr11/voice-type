@@ -2,24 +2,24 @@
 
 These tests use mocks so no real microphone hardware is required.
 """
+# pyright: reportPrivateUsage=false, reportUnknownVariableType=false, reportMissingTypeArgument=false
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch, call
-import threading
-import time
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 
 from voice_type.audio import (
+    CHANNELS,
+    DTYPE,
+    SAMPLE_RATE,
     AudioRecorder,
     MicrophoneError,
     check_microphone_access,
-    SAMPLE_RATE,
-    CHANNELS,
-    DTYPE,
+    trim_silence,
 )
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -34,6 +34,19 @@ class TestAudioConstants:
 
     def test_dtype_is_int16(self) -> None:
         assert DTYPE == "int16"
+
+
+class TestTrimSilence:
+    def test_trims_leading_and_trailing_silence(self) -> None:
+        audio = np.array([0, 0, 50, 400, 500, 50, 0, 0], dtype=np.int16)
+        trimmed = trim_silence(audio, threshold=200, padding_ms=0)
+        np.testing.assert_array_equal(trimmed, np.array([400, 500], dtype=np.int16))
+
+    def test_returns_empty_array_for_all_silence(self) -> None:
+        audio = np.zeros(32, dtype=np.int16)
+        trimmed = trim_silence(audio, threshold=200, padding_ms=0)
+        assert trimmed.size == 0
+        assert trimmed.dtype == np.int16
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +199,7 @@ class TestAudioRecorderStartStop:
     def test_stop_returns_int16_array_with_correct_dtype(self) -> None:
         """stop() returns array with dtype=numpy.int16."""
         mock_stream = self._make_mock_stream()
-        captured_callback: list = []
+        captured_callback: list[Any] = []
 
         def fake_input_stream(**kwargs):  # type: ignore[misc]
             captured_callback.append(kwargs.get("callback"))
@@ -208,7 +221,7 @@ class TestAudioRecorderStartStop:
     def test_stop_concatenates_multiple_chunks(self) -> None:
         """stop() concatenates all chunks from multiple callbacks into one array."""
         mock_stream = self._make_mock_stream()
-        captured_callback: list = []
+        captured_callback: list[Any] = []
 
         def fake_input_stream(**kwargs):  # type: ignore[misc]
             captured_callback.append(kwargs.get("callback"))
@@ -238,7 +251,7 @@ class TestAudioRecorderStartStop:
     def test_tobytes_produces_linear16_bytes(self) -> None:
         """The returned array's .tobytes() produces correct LINEAR16 byte sequence."""
         mock_stream = self._make_mock_stream()
-        captured_callback: list = []
+        captured_callback: list[Any] = []
 
         def fake_input_stream(**kwargs):  # type: ignore[misc]
             captured_callback.append(kwargs.get("callback"))
@@ -262,7 +275,7 @@ class TestAudioRecorderStartStop:
     def test_callback_copies_indata(self) -> None:
         """Callback must copy indata to avoid ring buffer aliasing."""
         mock_stream = self._make_mock_stream()
-        captured_callback: list = []
+        captured_callback: list[Any] = []
 
         def fake_input_stream(**kwargs):  # type: ignore[misc]
             captured_callback.append(kwargs.get("callback"))
@@ -295,3 +308,28 @@ class TestAudioRecorderStartStop:
                 r.start()
 
         assert "Privacy" in str(exc_info.value)
+
+    def test_stop_keeps_final_chunk_emitted_during_stream_shutdown(self) -> None:
+        """Late callback during stream.stop() must still be included in final audio."""
+        mock_stream = self._make_mock_stream()
+        captured_callback: list[Any] = []
+
+        def fake_input_stream(**kwargs):  # type: ignore[misc]
+            captured_callback.append(kwargs.get("callback"))
+            return mock_stream
+
+        with patch("sounddevice.InputStream", side_effect=fake_input_stream):
+            r = AudioRecorder()
+            r.start()
+
+        callback = captured_callback[0]
+        callback(np.array([[1], [2]], dtype=np.int16), 2, None, MagicMock())
+
+        def emit_late_chunk() -> None:
+            callback(np.array([[3], [4]], dtype=np.int16), 2, None, MagicMock())
+
+        mock_stream.stop.side_effect = emit_late_chunk
+
+        result = r.stop()
+
+        np.testing.assert_array_equal(result, np.array([1, 2, 3, 4], dtype=np.int16))

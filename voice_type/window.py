@@ -12,7 +12,6 @@ Why ctypes instead of win32gui.GetForegroundWindow():
 from __future__ import annotations
 
 import ctypes
-import ctypes.wintypes
 
 
 def capture_active_window() -> int:

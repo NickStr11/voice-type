@@ -1,4 +1,5 @@
 """Tests for STTClient — mocked GCP, verifies config and response parsing."""
+# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 from pathlib import Path
@@ -37,10 +38,10 @@ def test_stt_client_language_codes_plural(config: AppConfig) -> None:
         assert "en-US" in lang
 
 
-def test_stt_client_model_chirp_2(config: AppConfig) -> None:
+def test_stt_client_model_chirp_3(config: AppConfig) -> None:
     with patch("voice_type.stt.SpeechClient"):
         client = STTClient(config)
-        assert client._rec_config.model == "chirp_2"
+        assert client._rec_config.model == "chirp_3"
 
 
 async def test_recognize_returns_transcript(config: AppConfig) -> None:

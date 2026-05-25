@@ -6,8 +6,8 @@ No cloud, no cost, ~0.3s response time on RX 7800 XT.
 from __future__ import annotations
 
 import json
-import urllib.request
 import urllib.error
+import urllib.request
 from typing import Final
 
 from loguru import logger
@@ -44,7 +44,7 @@ class LocalLLMClient:
         except Exception:
             self._available = False
         logger.info(f"LocalLLM (Ollama): {'available' if self._available else 'not available'}")
-        return self._available
+        return bool(self._available)
 
     def clean(self, raw_text: str) -> str:
         """Clean transcription via local Ollama model.
@@ -76,7 +76,7 @@ class LocalLLMClient:
                 result = data.get("response", "").strip()
                 if not result:
                     return raw_text
-                logger.info(f"LocalLLM cleaned: {repr(raw_text[:40])} -> {repr(result[:40])}")
+                logger.info(f"LocalLLM cleanup complete — chars: {len(raw_text)} -> {len(result)}")
                 return result
         except urllib.error.URLError:
             logger.warning("LocalLLM: Ollama not reachable — using raw text")

@@ -1,11 +1,12 @@
-"""Tests for WhisperSTTClient — mocked faster-whisper, verifies lazy loading and audio conversion."""
-# pyright: reportPrivateUsage=false
+"""Tests for WhisperSTTClient server-first backend."""
+# pyright: reportPrivateUsage=false, reportUnusedFunction=false
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
 
 from voice_type.config import AppConfig
@@ -24,80 +25,168 @@ def config() -> AppConfig:
 
 
 @pytest.fixture()
-def mock_whisper_model():  # type: ignore[no-untyped-def]
-    with patch("voice_type.stt_whisper.WhisperModel") as MockModel:
-        model_instance = MagicMock()
-        MockModel.return_value = model_instance
-        # segments is a generator-like iterable
-        seg1 = MagicMock()
-        seg1.text = " Hello "
-        seg2 = MagicMock()
-        seg2.text = " world "
-        info = MagicMock()
-        info.language = "en"
-        info.language_probability = 0.95
-        model_instance.transcribe.return_value = (iter([seg1, seg2]), info)
-        yield MockModel, model_instance
+def _mock_paths(tmp_path: Path) -> tuple[Path, Path]:
+    cli = tmp_path / "whisper-cli.exe"
+    cli.write_text("fake")
+    server = tmp_path / "whisper-server.exe"
+    server.write_text("fake")
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    model = model_dir / "ggml-large-v3-turbo.bin"
+    model.write_text("fake")
+    return cli, model
 
 
-def test_model_not_loaded_at_init(config: AppConfig) -> None:
-    """WhisperSTTClient.__init__ must NOT load the model — lazy loading only."""
-    with patch("voice_type.stt_whisper.WhisperModel") as MockModel:
-        client = WhisperSTTClient(config)
-        MockModel.assert_not_called()
-        assert client._model is None
+def _make_json_output(out_base: str, text: str) -> None:
+    data = {"transcription": [{"text": text}]}
+    Path(f"{out_base}.json").write_text(json.dumps(data), encoding="utf-8")
 
 
 async def test_recognize_empty_returns_empty(config: AppConfig) -> None:
-    """Empty audio bytes returns empty string without error."""
-    with patch("voice_type.stt_whisper.WhisperModel"):
+    with patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True):
         client = WhisperSTTClient(config)
-        result = await client.recognize(b"")
+    result = await client.recognize(b"")
     assert result == ""
 
 
-async def test_recognize_returns_transcript(
-    config: AppConfig, mock_whisper_model: tuple[MagicMock, MagicMock]
+async def test_recognize_uses_server_when_available(config: AppConfig, _mock_paths: tuple[Path, Path]) -> None:
+    cli, model = _mock_paths
+    with (
+        patch("voice_type.stt_whisper._CLI_EXE", cli),
+        patch("voice_type.stt_whisper._SERVER_EXE", cli.with_name("whisper-server.exe")),
+        patch("voice_type.stt_whisper._MODEL_DIR", model.parent),
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
+        patch.object(WhisperSTTClient, "_server_healthcheck", return_value=True),
+        patch.object(WhisperSTTClient, "_run_server", return_value="server text") as mock_server,
+        patch.object(WhisperSTTClient, "_run_cli", return_value="cli text") as mock_cli,
+    ):
+        client = WhisperSTTClient(config)
+        client._server_available = True
+        client._server_ready.set()
+        result = await client.recognize(b"\x00\x00" * 16000)
+
+    assert result == "server text"
+    mock_server.assert_called_once()
+    mock_cli.assert_not_called()
+
+
+async def test_server_failure_restarts_once_then_succeeds(config: AppConfig, _mock_paths: tuple[Path, Path]) -> None:
+    cli, model = _mock_paths
+    with (
+        patch("voice_type.stt_whisper._CLI_EXE", cli),
+        patch("voice_type.stt_whisper._SERVER_EXE", cli.with_name("whisper-server.exe")),
+        patch("voice_type.stt_whisper._MODEL_DIR", model.parent),
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
+        patch.object(WhisperSTTClient, "_server_healthcheck", return_value=True),
+        patch.object(WhisperSTTClient, "_run_server", side_effect=["", "server after restart"]) as mock_server,
+        patch.object(WhisperSTTClient, "_restart_server_sync", autospec=True) as mock_restart,
+    ):
+        client = WhisperSTTClient(config)
+        client._server_available = True
+        client._server_ready.set()
+        result = await client.recognize(b"\x00\x00" * 16000)
+
+    assert result == "server after restart"
+    assert mock_server.call_count == 2
+    mock_restart.assert_called_once_with(client)
+
+
+async def test_server_failure_falls_back_to_cli(
+    config: AppConfig,
+    _mock_paths: tuple[Path, Path],
+    tmp_path: Path,
 ) -> None:
-    """recognize() returns joined text from transcribe() segments."""
-    _, model_instance = mock_whisper_model
-    client = WhisperSTTClient(config)
-    audio_bytes = np.zeros(16000, dtype=np.int16).tobytes()
-    result = await client.recognize(audio_bytes)
-    assert result == "Hello world"
+    cli, model = _mock_paths
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        of_idx = cmd.index("-of") + 1
+        _make_json_output(cmd[of_idx], "cli fallback")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with (
+        patch("voice_type.stt_whisper._CLI_EXE", cli),
+        patch("voice_type.stt_whisper._SERVER_EXE", cli.with_name("whisper-server.exe")),
+        patch("voice_type.stt_whisper._MODEL_DIR", model.parent),
+        patch("voice_type.stt_whisper._WHISPER_DIR", tmp_path),
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
+        patch.object(WhisperSTTClient, "_server_healthcheck", return_value=False),
+        patch.object(WhisperSTTClient, "_run_server", return_value=""),
+        patch.object(WhisperSTTClient, "_restart_server_sync", autospec=True),
+        patch("subprocess.run", side_effect=fake_run),
+    ):
+        client = WhisperSTTClient(config)
+        client._server_available = False
+        client._server_ready.set()
+        result = await client.recognize(b"\x00\x00" * 16000)
+
+    assert result == "cli fallback"
 
 
-def test_audio_conversion_correct() -> None:
-    """int16 max maps to ~1.0, int16 min maps to -1.0 float32."""
-    max_int16 = np.array([32767], dtype=np.int16).tobytes()
-    min_int16 = np.array([-32768], dtype=np.int16).tobytes()
+async def test_cli_gpu_fallback_to_cpu(config: AppConfig, _mock_paths: tuple[Path, Path], tmp_path: Path) -> None:
+    cli, model = _mock_paths
+    call_count = 0
 
-    float_max = np.frombuffer(max_int16, dtype=np.int16).astype(np.float32) / 32768.0
-    float_min = np.frombuffer(min_int16, dtype=np.int16).astype(np.float32) / 32768.0
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal call_count
+        call_count += 1
+        if "-dev" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="segfault")
+        of_idx = cmd.index("-of") + 1
+        _make_json_output(cmd[of_idx], "cpu result")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    assert abs(float_max[0] - 1.0) < 0.001
-    assert abs(float_min[0] - (-1.0)) < 0.001
+    with (
+        patch("voice_type.stt_whisper._CLI_EXE", cli),
+        patch("voice_type.stt_whisper._SERVER_EXE", cli.with_name("whisper-server.exe")),
+        patch("voice_type.stt_whisper._MODEL_DIR", model.parent),
+        patch("voice_type.stt_whisper._WHISPER_DIR", tmp_path),
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
+        patch.object(WhisperSTTClient, "_server_healthcheck", return_value=False),
+        patch("subprocess.run", side_effect=fake_run),
+    ):
+        client = WhisperSTTClient(config)
+        client._server_available = False
+        client._server_ready.set()
+        result = await client.recognize(b"\x00\x00" * 16000)
+
+    assert result == "cpu result"
+    assert call_count == 3
 
 
-async def test_transcribe_called_with_auto_detect(
-    config: AppConfig, mock_whisper_model: tuple[MagicMock, MagicMock]
-) -> None:
-    """transcribe() must be called with language=None for auto-detection."""
-    _, model_instance = mock_whisper_model
-    client = WhisperSTTClient(config)
-    audio_bytes = np.zeros(16000, dtype=np.int16).tobytes()
-    await client.recognize(audio_bytes)
-    call_kwargs = model_instance.transcribe.call_args.kwargs
-    assert call_kwargs.get("language") is None
+def test_missing_binary_raises(config: AppConfig) -> None:
+    with (
+        patch("voice_type.stt_whisper._CLI_EXE", Path("/nonexistent/whisper-cli.exe")),
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
+    ):
+        client = WhisperSTTClient(config)
+        client._server_available = False
+        client._server_ready.set()
+        with pytest.raises(FileNotFoundError, match="whisper-cli.exe"):
+            client._transcribe_sync(b"\x00\x00" * 1000)
 
 
-async def test_transcribe_called_with_vad_filter(
-    config: AppConfig, mock_whisper_model: tuple[MagicMock, MagicMock]
-) -> None:
-    """transcribe() must be called with vad_filter=True."""
-    _, model_instance = mock_whisper_model
-    client = WhisperSTTClient(config)
-    audio_bytes = np.zeros(16000, dtype=np.int16).tobytes()
-    await client.recognize(audio_bytes)
-    call_kwargs = model_instance.transcribe.call_args.kwargs
-    assert call_kwargs.get("vad_filter") is True
+def test_missing_model_raises(config: AppConfig, tmp_path: Path) -> None:
+    cli = tmp_path / "whisper-cli.exe"
+    cli.write_text("fake")
+    with (
+        patch("voice_type.stt_whisper._CLI_EXE", cli),
+        patch("voice_type.stt_whisper._MODEL_DIR", tmp_path / "empty"),
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
+    ):
+        client = WhisperSTTClient(config)
+        client._server_available = False
+        client._server_ready.set()
+        with pytest.raises(FileNotFoundError, match="Model not found"):
+            client._transcribe_sync(b"\x00\x00" * 1000)
+
+
+def test_shutdown_terminates_managed_server(config: AppConfig) -> None:
+    with patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True):
+        client = WhisperSTTClient(config)
+    process = MagicMock()
+    client._server_process = process
+    client._server_managed = True
+
+    client.shutdown()
+
+    process.terminate.assert_called_once_with()

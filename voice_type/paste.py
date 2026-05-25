@@ -14,6 +14,7 @@ Design decisions:
 """
 from __future__ import annotations
 
+import re
 import time
 
 import win32api  # type: ignore[import-untyped]
@@ -48,9 +49,13 @@ class PasteService:
         if hwnd == 0:
             logger.warning(
                 "PasteService.paste(): hwnd=0 — no target window captured. "
-                f"Text was: {repr(text[:60])}"
+                f"chars={len(text)}"
             )
             return
+
+        # Collapse any run of blank lines to a single \n — pasted blank lines
+        # trigger submit in Claude Code CLI 4.7+ and some chat apps.
+        normalized = re.sub(r"\n\s*\n+", "\n", text).strip()
 
         # Step 1: Save existing clipboard content
         original_clip: str | None = _get_clipboard_text()
@@ -60,30 +65,17 @@ class PasteService:
             win32gui.SetForegroundWindow(hwnd)
             time.sleep(0.05)  # focus propagation — SetForegroundWindow is async
 
-            # Step 3+4: Paste text block by block, using Shift+Enter for newlines
-            # This prevents Telegram/Discord/etc from sending on Enter
-            parts = text.split("\n")
-            for i, part in enumerate(parts):
-                part = part.strip()
-                if not part:
-                    continue
-                _set_clipboard_text(part)
-                # Ctrl+V to paste this block
-                win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)  # pyright: ignore[reportUnknownMemberType]
-                win32api.keybd_event(ord("V"), 0, 0, 0)  # pyright: ignore[reportUnknownMemberType]
-                win32api.keybd_event(ord("V"), 0, win32con.KEYEVENTF_KEYUP, 0)  # pyright: ignore[reportUnknownMemberType]
-                win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)  # pyright: ignore[reportUnknownMemberType]
-                time.sleep(0.03)
-                # Shift+Enter for newline (not Enter which sends message)
-                if i < len(parts) - 1:
-                    win32api.keybd_event(win32con.VK_SHIFT, 0, 0, 0)  # pyright: ignore[reportUnknownMemberType]
-                    win32api.keybd_event(win32con.VK_RETURN, 0, 0, 0)  # pyright: ignore[reportUnknownMemberType]
-                    win32api.keybd_event(win32con.VK_RETURN, 0, win32con.KEYEVENTF_KEYUP, 0)  # pyright: ignore[reportUnknownMemberType]
-                    win32api.keybd_event(win32con.VK_SHIFT, 0, win32con.KEYEVENTF_KEYUP, 0)  # pyright: ignore[reportUnknownMemberType]
-                    time.sleep(0.02)
+            # Step 3+4: Single paste. Modern apps (Telegram Web, Discord, Claude
+            # Code, editors) only submit on Enter KeyPress, not on pasted \n —
+            # so splitting + Shift+Enter emulation is unnecessary and fragile.
+            _set_clipboard_text(normalized)
+            win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)  # pyright: ignore[reportUnknownMemberType]
+            win32api.keybd_event(ord("V"), 0, 0, 0)  # pyright: ignore[reportUnknownMemberType]
+            win32api.keybd_event(ord("V"), 0, win32con.KEYEVENTF_KEYUP, 0)  # pyright: ignore[reportUnknownMemberType]
+            win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)  # pyright: ignore[reportUnknownMemberType]
             time.sleep(0.05)
 
-            logger.info(f"Pasted into HWND {hwnd}: {repr(text[:60])}")
+            logger.info(f"Pasted into HWND {hwnd} — chars: {len(normalized)}")
 
         finally:
             # Step 5: Restore original clipboard (always attempt, even on error)

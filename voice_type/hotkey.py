@@ -16,7 +16,7 @@ import ctypes
 import ctypes.wintypes
 import threading
 from collections.abc import Callable
-from typing import Final, Optional
+from typing import Final
 
 from loguru import logger
 
@@ -65,8 +65,8 @@ class HotkeyListener:
     def __init__(self, config: AppConfig, on_toggle: Callable[[], None]) -> None:
         self._config = config
         self._on_toggle = on_toggle
-        self._thread: Optional[threading.Thread] = None
-        self._thread_id: Optional[int] = None
+        self._thread: threading.Thread | None = None
+        self._thread_id: int | None = None
         self._running = False
 
     def _loop(self) -> None:

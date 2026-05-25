@@ -25,9 +25,10 @@ _CLEANUP_PROMPT_TEMPLATE: Final[str] = (
     "Clean up this voice transcription. Rules:\n"
     "1. Fix punctuation, capitalization, and grammar.\n"
     "2. Remove filler words (um, uh, ну, эм, короче, вот, типа, как бы, в общем).\n"
-    "3. Split into paragraphs by topic — add blank lines between logical blocks.\n"
+    "3. Return the entire result as a single paragraph. "
+    "Do not insert blank lines or paragraph breaks.\n"
     "4. When listing items (во-первых, во-вторых, 1, 2, 3, first, second), "
-    "put each item on a new line.\n"
+    "put each item on a new line (single \\n, never blank lines).\n"
     "5. Keep the original meaning and style. Do not add or invent content.\n"
     "6. Output only the corrected text, nothing else.\n\n{text}"
 )
@@ -87,9 +88,7 @@ class LLMClient:
             future = executor.submit(_sync_call)
             try:
                 cleaned = future.result(timeout=_TIMEOUT_S)
-                logger.info(
-                    f"LLM cleaned: {repr(raw_text[:40])} -> {repr(cleaned[:40])}"
-                )
+                logger.info(f"LLM cleanup complete — chars: {len(raw_text)} -> {len(cleaned)}")
                 return cleaned
             except concurrent.futures.TimeoutError:
                 logger.warning(

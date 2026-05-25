@@ -1,7 +1,7 @@
 """Audio capture subsystem for VoiceType.
 
 Records microphone input at 16kHz mono int16 — the native format for
-Google Cloud Speech-to-Text V2 (Chirp 2). No resampling needed.
+the app's Google Cloud STT path. No resampling needed.
 
 Key design decisions:
 - channels=1 always: stereo recording fails with PortAudioError -9998 on
@@ -15,7 +15,6 @@ Key design decisions:
 from __future__ import annotations
 
 import threading
-from typing import Optional
 
 import numpy as np
 import numpy.typing as npt
@@ -27,10 +26,35 @@ DTYPE: str = "int16"
 # Blocksize=0 lets PortAudio choose optimal buffer size for the device.
 # Explicit blocksize causes "invalid frames per buffer" on some WASAPI devices.
 BLOCKSIZE: int = 0
+SILENCE_THRESHOLD: int = 200
+SILENCE_PADDING_MS: int = 120
 
 
 class MicrophoneError(Exception):
     """Raised when the microphone cannot be opened."""
+
+
+def trim_silence(
+    audio: npt.NDArray[np.int16],
+    threshold: int = SILENCE_THRESHOLD,
+    padding_ms: int = SILENCE_PADDING_MS,
+) -> npt.NDArray[np.int16]:
+    """Trim leading and trailing silence with a conservative amplitude gate.
+
+    Returns an empty array if nothing crosses the threshold. Padding keeps
+    plosive consonants and short breaths near the cut points.
+    """
+    if audio.size == 0:
+        return audio
+
+    active = np.flatnonzero(np.abs(audio) >= threshold)
+    if active.size == 0:
+        return np.zeros(0, dtype=np.int16)
+
+    pad_samples = int(SAMPLE_RATE * padding_ms / 1000)
+    start = max(int(active[0]) - pad_samples, 0)
+    end = min(int(active[-1]) + pad_samples + 1, audio.size)
+    return audio[start:end]
 
 
 def check_microphone_access() -> None:
@@ -77,10 +101,11 @@ class AudioRecorder:
         # ... time passes while user speaks ...
         audio: np.ndarray = recorder.stop()
         audio_bytes: bytes = audio.tobytes()  # ready for GCP STT LINEAR16
+
     """
 
     def __init__(self) -> None:
-        self._stream: Optional[sd.InputStream] = None
+        self._stream: sd.InputStream | None = None
         self._chunks: list[npt.NDArray[np.int16]] = []
         self._lock = threading.Lock()
 
@@ -146,12 +171,14 @@ class AudioRecorder:
             if self._stream is None:
                 raise RuntimeError("AudioRecorder.stop() called without a prior start()")
             stream = self._stream
-            self._stream = None
-            chunks = list(self._chunks)
-            self._chunks = []
 
         stream.stop()
         stream.close()
+
+        with self._lock:
+            self._stream = None
+            chunks = list(self._chunks)
+            self._chunks = []
 
         if not chunks:
             # Edge case: stopped immediately after start, before any callback fired.

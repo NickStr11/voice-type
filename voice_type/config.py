@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -36,6 +36,8 @@ class AppConfig:
     stt_region: str = "us"
     stt_provider: str = "cloud"
     whisper_model: str = "large-v3-turbo"
+    cypher_planner: str = "off"
+    cypher_planner_model: str = "gemini-2.5-flash"
 
 
 def load_config() -> AppConfig:
@@ -67,31 +69,41 @@ def load_config() -> AppConfig:
     # --- WHISPER_MODEL (optional, has default) ---
     whisper_model = os.environ.get("VOICETYPE_WHISPER_MODEL", "large-v3-turbo").strip()
 
+    # --- CYPHER PLANNER (optional, has default) ---
+    cypher_planner = os.environ.get("VOICETYPE_CYPHER_PLANNER", "off").strip().lower()
+    if cypher_planner not in {"gemini", "off"}:
+        errors.append(
+            "VOICETYPE_CYPHER_PLANNER must be 'gemini' or 'off'.\n"
+            f"  Got: {cypher_planner!r}"
+        )
+
+    cypher_planner_model = os.environ.get("VOICETYPE_CYPHER_PLANNER_MODEL", "gemini-2.5-flash").strip()
+
     # --- GCP credentials — only required for cloud provider ---
     creds_path: Path | None = None
-    gcp_project_id = ""
+    raw_creds = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    if raw_creds:
+        resolved = Path(raw_creds).expanduser().resolve()
+        if resolved.exists():
+            creds_path = resolved
+    gcp_project_id = os.environ.get("GCP_PROJECT_ID", "").strip()
 
-    if stt_provider != "local":
-        # --- GOOGLE_APPLICATION_CREDENTIALS ---
-        raw_creds = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    requires_gcp = stt_provider != "local" or cypher_planner == "gemini"
+
+    if requires_gcp:
         if not raw_creds:
             errors.append(
                 "GOOGLE_APPLICATION_CREDENTIALS is not set.\n"
                 "  Set it to the path of your GCP service account JSON file.\n"
                 "  Example: GOOGLE_APPLICATION_CREDENTIALS=/home/user/.config/gcp/key.json"
             )
-        else:
+        elif creds_path is None:
             resolved = Path(raw_creds).expanduser().resolve()
-            if not resolved.exists():
-                errors.append(
-                    f"GOOGLE_APPLICATION_CREDENTIALS points to a missing file: {resolved}\n"
-                    "  Create a service account key in the GCP Console and download the JSON."
-                )
-            else:
-                creds_path = resolved
+            errors.append(
+                f"GOOGLE_APPLICATION_CREDENTIALS points to a missing file: {resolved}\n"
+                "  Create a service account key in the GCP Console and download the JSON."
+            )
 
-        # --- GCP_PROJECT_ID ---
-        gcp_project_id = os.environ.get("GCP_PROJECT_ID", "").strip()
         if not gcp_project_id:
             errors.append(
                 "GCP_PROJECT_ID is not set.\n"
@@ -118,6 +130,8 @@ def load_config() -> AppConfig:
         stt_region=stt_region,
         stt_provider=stt_provider,
         whisper_model=whisper_model,
+        cypher_planner=cypher_planner,
+        cypher_planner_model=cypher_planner_model,
     )
 
 
@@ -130,4 +144,6 @@ if __name__ == "__main__":
     print(f"stt_region:           {cfg.stt_region}")
     print(f"stt_provider:         {cfg.stt_provider}")
     print(f"whisper_model:        {cfg.whisper_model}")
+    print(f"cypher_planner:       {cfg.cypher_planner}")
+    print(f"cypher_planner_model: {cfg.cypher_planner_model}")
     print("Config loaded successfully.")

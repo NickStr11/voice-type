@@ -1,4 +1,5 @@
 """Tests for PasteService -- mocked win32 modules (Windows-only at runtime)."""
+# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -6,8 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from tests.conftest import WIN32_MOCKS
-
-from voice_type.paste import PasteService, _get_clipboard_text, _set_clipboard_text  # noqa: E402
+from voice_type.paste import PasteService  # noqa: E402
 
 
 def test_paste_empty_text_skips(caplog: pytest.LogCaptureFixture) -> None:

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from pathlib import Path
 
 from loguru import logger
@@ -48,12 +49,22 @@ def main() -> None:
     logger.info(f"Config loaded -- hotkey: {config.hotkey}, project: {config.gcp_project_id}")
 
     # Step 2: Microphone access check -- exits 1 with clear instructions (SYS-02)
+    # Retry up to 30s: USB microphones may not be enumerated yet at autostart.
     logger.info("Checking microphone access...")
-    try:
-        check_microphone_access()
-        logger.info("Microphone: OK")
-    except MicrophoneError as exc:
-        logger.error(f"Microphone check failed:\n{exc}")
+    last_exc: MicrophoneError | None = None
+    for attempt in range(30):
+        try:
+            check_microphone_access()
+            logger.info(f"Microphone: OK (attempt {attempt + 1})")
+            last_exc = None
+            break
+        except MicrophoneError as exc:
+            last_exc = exc
+            if attempt == 0:
+                logger.warning(f"Microphone not ready, retrying: {exc}")
+            time.sleep(1.0)
+    if last_exc is not None:
+        logger.error(f"Microphone check failed after 30s:\n{last_exc}")
         sys.exit(1)
 
     # Step 3: Create asyncio event loop on the main thread
@@ -94,6 +105,16 @@ def main() -> None:
     # Step 7: Start tray icon -- non-blocking, runs in its own daemon thread
     tray.run_detached()
 
+    # Step 7.5: Warm up whisper (Vulkan shaders + model cache) in background
+    if config.stt_provider == "local":
+        import threading
+        def _warmup() -> None:
+            try:
+                controller.warmup_local_stt()
+            except Exception as exc:
+                logger.warning(f"Warmup failed (non-fatal): {exc}")
+        threading.Thread(target=_warmup, daemon=True, name="whisper-warmup").start()
+
     logger.info(f"VoiceType ready -- press {config.hotkey} to start/stop recording")
     logger.info("Tray icon active -- right-click tray icon to quit, or press Ctrl+C")
 
@@ -109,6 +130,7 @@ def main() -> None:
         # Step 9: Clean shutdown
         controller.stop_hotkey_listener()
         tray.stop()
+        controller.close()
         # Drain any remaining queued events before closing the loop
         loop.run_until_complete(asyncio.sleep(0))
         loop.close()
