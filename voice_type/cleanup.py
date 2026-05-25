@@ -8,17 +8,17 @@ from __future__ import annotations
 import re
 
 # === Filler patterns — case-insensitive, word boundaries ===
+# Only pure fillers that are NEVER meaningful in context.
+# Words like "ну", "вот", "смотри", "слушай", "значит", "блин" are
+# often intentional — removing them butchers natural speech.
 _FILLERS_RU = [
-    r"\bну\b", r"\bвот\b", r"\bкороче\b", r"\bтипа\b", r"\bкак бы\b",
-    r"\bв общем\b", r"\bв принципе\b", r"\bтак сказать\b", r"\bзначит\b",
-    r"\bэто самое\b", r"\bэм\b", r"\bэээ\b", r"\bааа\b", r"\bммм\b",
-    r"\bслушай\b", r"\bсмотри\b", r"\bблин\b", r"\bблядь\b",
-    r"\bпонял\b(?=\s*[.?!])", r"\bда\b(?=\s*[.?!])",  # trailing "понял." "да."
+    r"\bкороче\b", r"\bтипа\b", r"\bкак бы\b",
+    r"\bэто самое\b", r"\bтак сказать\b",
+    r"\bэм\b", r"\bэээ+\b", r"\bааа+\b", r"\bммм+\b",
 ]
 _FILLERS_EN = [
-    r"\bum\b", r"\buh\b", r"\blike\b(?!\s+(?:this|that|a|the|it))",
-    r"\byou know\b", r"\bi mean\b", r"\bbasically\b", r"\bactually\b",
-    r"\bliterally\b", r"\bhonestly\b", r"\bkind of\b", r"\bsort of\b",
+    r"\bum\b", r"\buh\b", r"\buhh+\b", r"\bumm+\b",
+    r"\byou know\b", r"\bi mean\b",
 ]
 
 _FILLER_PATTERN = re.compile(
@@ -55,6 +55,8 @@ _LIST_MARKERS = re.compile(
 _MULTI_SPACE = re.compile(r" {2,}")
 _LEADING_COMMA = re.compile(r"^\s*,\s*")
 _DOUBLE_COMMA = re.compile(r",\s*,")
+_MISSING_SPACE_AFTER_SENTENCE_PUNCT = re.compile(r"(?<=[.!?…])(?=[A-Za-zА-Яа-яЁё])")
+_MISSING_SPACE_BEFORE_UPPER = re.compile(r"(?<=[a-zа-яё])(?=[A-ZА-ЯЁ])")
 _LEADING_PUNCT = re.compile(r"^\s*[,;]\s*", re.MULTILINE)
 _EMPTY_LINES = re.compile(r"\n{3,}")
 
@@ -97,7 +99,7 @@ def _split_by_sentence_groups(text: str, group_size: int = 3) -> str:
 
     # Split by sentence endings, group by N
     parts = re.split(r'([.!?]+\s*)', text)
-    result = []
+    result: list[str] = []
     sentence_count = 0
 
     for part in parts:
@@ -115,11 +117,20 @@ def fast_clean(text: str) -> str:
     if not text.strip():
         return text
 
+    # Step 0: Collapse segment-level linebreaks from Whisper. whisper.cpp
+    # returns one \n per internal 30s window, which used to be smoothed
+    # out by the Gemini round-trip. Now that more long phrases route to
+    # fast_clean, we must normalize them here — paragraphs are
+    # reintroduced later at real topic transitions only.
+    result = re.sub(r"\s*\n+\s*", " ", text)
+
     # Step 1: Remove fillers
-    result = _FILLER_PATTERN.sub("", text)
+    result = _FILLER_PATTERN.sub("", result)
 
     # Step 2: Fix punctuation artifacts
     result = _DOUBLE_COMMA.sub(",", result)
+    result = _MISSING_SPACE_AFTER_SENTENCE_PUNCT.sub(" ", result)
+    result = _MISSING_SPACE_BEFORE_UPPER.sub(" ", result)
     result = _MULTI_SPACE.sub(" ", result)
     result = result.strip()
 
