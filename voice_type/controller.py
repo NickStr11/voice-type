@@ -19,7 +19,6 @@ Pipeline (Phase 2):
 from __future__ import annotations
 
 import asyncio
-import re
 import time as _time
 
 import numpy as np
@@ -43,17 +42,10 @@ from voice_type.window import capture_active_window
 
 FAST_CLEANUP_MAX_DURATION_S = 3.0
 FAST_CLEANUP_MAX_CHARS = 120
-FULL_CLEANUP_MIN_DURATION_S = 12.0
-FULL_CLEANUP_MIN_CHARS = 280
+# Cloud Speech-to-Text v2 inline-audio sync API holds up to ~60s; we keep a
+# safety margin and only enroll utterances <=50s in the parallel race. Longer
+# audio runs whisper-only.
 LOCAL_STT_CLOUD_RETRY_MAX_DURATION_S = 50.0
-LOCAL_STT_SUSPICIOUS_SCORE_THRESHOLD = 2  # kept for future heuristics, currently unused
-_PUNCT_GLUE_RE = re.compile(r"(?<=[.!?…])(?=[A-Za-zА-Яа-яЁё])")
-_CAMEL_GLUE_RE = re.compile(r"(?<=[a-zа-яё])(?=[A-ZА-ЯЁ])")
-_LONG_ALPHA_TOKEN_RE = re.compile(r"\b[A-Za-zА-Яа-яЁё]{18,}\b")
-# Cyrillic words ending in "-инг" — classic transliteration of English -ing
-# words (funding, scanning, debugging). Some Russian-naturalized terms
-# (митинг, тренинг) also match — that's fine, retry via cloud is safe.
-_TRANSLIT_ING_RE = re.compile(r"\b[А-Яа-яЁё]{2,}инг\b")
 
 
 class AppController:
@@ -124,9 +116,6 @@ class AppController:
         # only when the text is long AND looks unfinished.
         if stripped.endswith((".", "!", "?", "…")):
             return "fast"
-
-        if duration_s >= FULL_CLEANUP_MIN_DURATION_S or len(raw_text) >= FULL_CLEANUP_MIN_CHARS:
-            return "full"
 
         return "full"
 
@@ -292,22 +281,6 @@ class AppController:
                 self._tray.set_state(State.IDLE)
             logger.info("State: IDLE -- ready for next recording")
 
-    def _transcript_glue_score(self, text: str) -> int:
-        stripped = text.strip()
-        if not stripped:
-            return 0
-
-        score = 0
-        score += 2 * sum(1 for _ in _PUNCT_GLUE_RE.finditer(stripped))
-        score += sum(1 for _ in _CAMEL_GLUE_RE.finditer(stripped))
-        score += 2 * len(_LONG_ALPHA_TOKEN_RE.findall(stripped))
-        # Each -инг suffix in Cyrillic flags a likely transliteration —
-        # whisper sometimes mangles English words to "фандинг", "сканинг",
-        # "трекинг" instead of keeping them in Latin. Cloud Chirp handles
-        # code-switching better, so we want to escalate these to cloud.
-        score += 2 * len(_TRANSLIT_ING_RE.findall(stripped))
-        return score
-
     async def _transcribe(self, audio_bytes: bytes, duration_s: float) -> str:
         """Delegate transcription to the active STT provider.
 
@@ -315,16 +288,19 @@ class AppController:
         STTClient when 'cloud'. Raises RuntimeError if cloud is selected
         but GCP credentials were not configured.
 
-        Local mode strategy — parallel race:
-            * For audio short enough for cloud (<=12s) AND with cloud
-              configured, start cloud and local STT *in parallel*.
-            * Wait for local (Whisper, ~0.3-2s). If the local transcript
-              looks clean (score < threshold), cancel cloud and return
-              immediately — pure speed for typical phrases.
-            * If local looks suspicious (transliterated -инг words, glued
-              sentences, very long alpha tokens) OR is empty, await the
-              already-running cloud task and pick the better-scoring one.
-            * For long audio (>12s), cloud isn't applicable — local only.
+        Local mode strategy (parallel cloud race):
+            * For audio <=50s (cloud sync-API safe window) AND with cloud
+              configured: start cloud and local Whisper *in parallel*,
+              then prefer cloud when it returns non-empty.
+            * If cloud raises any exception (network, quota, deadline) we
+              degrade gracefully to the already-computed local result —
+              we never crash a pipeline that already has a usable Whisper
+              transcript.
+            * Caller cancellation propagates: we cancel cloud_task and
+              re-raise so AppController.run() can exit cleanly.
+            * For audio >50s, cloud is skipped (sync inline-audio API
+              limit) and we run whisper-only with cloud fallback only if
+              whisper returns empty.
         """
         if self.stt_provider == "local":
             can_race = (
@@ -339,21 +315,36 @@ class AppController:
                     return await self._stt.recognize(audio_bytes)
                 return local_text
 
-            # Both stay in flight; we always prefer cloud when it succeeds.
-            # Regex-based "suspicious" detection (transliteration, word
-            # breaks, sentence glue) underfit reality — whisper can split
-            # "поводу" into "пов оду" with score=0 and we'd hand that to
-            # paste. Cloud Chirp handles ru/en code-switching and short-
-            # form recognition more reliably; the ~1-2s overhead is the
-            # price of correctness.
+            # Both providers stay in flight; we prefer cloud when it
+            # succeeds because Chirp handles ru/en code-switching and
+            # short-form recognition more reliably than whisper-cpp.
+            # Whisper acts as fallback for empty/failing cloud calls.
             assert self._stt is not None  # for type-checker — guarded by can_race
             cloud_task = asyncio.create_task(self._stt.recognize(audio_bytes))
-            local_text = await self._stt_whisper.recognize(audio_bytes)
-            logger.info("Whisper returned -- awaiting cloud race winner")
 
+            try:
+                local_text = await self._stt_whisper.recognize(audio_bytes)
+            except BaseException:
+                # Local path blew up: do not leak cloud_task.
+                cloud_task.cancel()
+                try:
+                    await cloud_task
+                except BaseException:
+                    pass
+                raise
+
+            logger.info("Whisper returned -- awaiting cloud race winner")
             try:
                 cloud_text = await cloud_task
             except asyncio.CancelledError:
+                # External cancellation (e.g. app shutdown). Propagate so
+                # AppController.run() can exit promptly — do not silently
+                # return a result to be pasted into a quitting app.
+                raise
+            except Exception as exc:
+                # Network / quota / DeadlineExceeded / auth errors must
+                # NOT destroy a usable whisper transcript. Degrade.
+                logger.warning(f"Cloud STT failed ({type(exc).__name__}: {exc}) -- using local result")
                 return local_text
 
             if cloud_text.strip():

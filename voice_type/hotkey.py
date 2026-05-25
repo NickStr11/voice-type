@@ -55,6 +55,10 @@ def _parse_hotkey(hotkey_str: str) -> tuple[int, int]:
     return MOD_CTRL | MOD_SHIFT | MOD_NOREPEAT, VK_SPACE
 
 
+class HotkeyRegistrationError(RuntimeError):
+    """Raised when RegisterHotKey fails — e.g. combo taken by another app."""
+
+
 class HotkeyListener:
     """Listens for a global hotkey via Win32 RegisterHotKey.
 
@@ -62,12 +66,16 @@ class HotkeyListener:
     from that thread — callers must be thread-safe.
     """
 
+    _REGISTRATION_TIMEOUT_S: float = 2.0
+
     def __init__(self, config: AppConfig, on_toggle: Callable[[], None]) -> None:
         self._config = config
         self._on_toggle = on_toggle
         self._thread: threading.Thread | None = None
         self._thread_id: int | None = None
         self._running = False
+        self._registered = threading.Event()
+        self._registration_error: str | None = None
 
     def _loop(self) -> None:
         """Win32 message loop — runs in daemon thread."""
@@ -76,10 +84,16 @@ class HotkeyListener:
         modifiers, vk_code = _parse_hotkey(self._config.hotkey)
 
         if not user32.RegisterHotKey(None, HOTKEY_ID, modifiers, vk_code):
-            logger.error(f"Failed to register hotkey: {self._config.hotkey}")
+            self._registration_error = (
+                f"Failed to register hotkey '{self._config.hotkey}' "
+                f"— combo likely taken by another running app"
+            )
+            logger.error(self._registration_error)
+            self._registered.set()
             return
 
         logger.info(f"Hotkey registered: {self._config.hotkey}")
+        self._registered.set()
 
         msg = ctypes.wintypes.MSG()
         while self._running:
@@ -92,11 +106,21 @@ class HotkeyListener:
         user32.UnregisterHotKey(None, HOTKEY_ID)
 
     def start(self) -> None:
-        """Start the hotkey listener in a daemon background thread."""
+        """Start the hotkey listener and wait for RegisterHotKey to succeed.
+
+        Raises:
+            HotkeyRegistrationError: If Win32 RegisterHotKey returns false
+                (e.g. another running app has already grabbed the combo).
+                Caller should surface this to the user — silent failure
+                means a dead tray icon.
+            RuntimeError: If start() is called twice without stop() between.
+        """
         if self._thread is not None:
             raise RuntimeError("HotkeyListener.start() called while already running")
 
         self._running = True
+        self._registered.clear()
+        self._registration_error = None
         thread = threading.Thread(
             target=self._loop,
             daemon=True,
@@ -104,6 +128,18 @@ class HotkeyListener:
         )
         self._thread = thread
         thread.start()
+
+        # Block until the worker thread has either succeeded with
+        # RegisterHotKey or filled in the error string. Without this
+        # synchronisation, callers see a "hotkey listener started" log
+        # while the actual registration may have failed silently.
+        if not self._registered.wait(self._REGISTRATION_TIMEOUT_S):
+            raise HotkeyRegistrationError(
+                f"Hotkey listener did not become ready within "
+                f"{self._REGISTRATION_TIMEOUT_S}s — message loop may be stuck"
+            )
+        if self._registration_error is not None:
+            raise HotkeyRegistrationError(self._registration_error)
 
     def stop(self) -> None:
         """Stop the hotkey listener."""

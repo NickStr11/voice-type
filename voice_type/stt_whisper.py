@@ -260,7 +260,7 @@ class WhisperSTTClient:
             "prompt": (
                 "funding scanner, dashboard, digests, AAVE, USDC, Base, "
                 "PharmOrder, СКЛИТ, Cypher, VoiceType, Cortex, Telegram, "
-                "Brэдбери, Lakan, Делёз, Ницше, ROCm, CUDA, GGUF, Whisper"
+                "Брэдбери, Лакан, Делёз, Ницше, ROCm, CUDA, GGUF, Whisper"
             ),
         }
 

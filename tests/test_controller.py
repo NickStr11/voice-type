@@ -213,8 +213,11 @@ async def test_auto_mode_keeps_fast_cleanup_for_medium_punctuated_utterance(cont
 
 
 @pytest.mark.asyncio
-async def test_stt_provider_local_prefers_cloud_for_short_audio(controller: AppController) -> None:
-    """Short local dictation prefers cloud STT when cloud creds are available."""
+async def test_stt_provider_local_races_cloud_for_short_audio(controller: AppController) -> None:
+    """Short local dictation starts BOTH cloud and whisper in parallel and
+    prefers cloud's result when it succeeds (chirp handles ru/en code-
+    switching more reliably than whisper-cpp).
+    """
     controller.stt_provider = "local"
     controller.mode = "fast"
     controller._recorder = MagicMock()
@@ -230,8 +233,11 @@ async def test_stt_provider_local_prefers_cloud_for_short_audio(controller: AppC
         await controller._handle_hotkey()  # IDLE -> RECORDING
         await controller._handle_hotkey()  # RECORDING -> process
 
+    # Both providers are queried in parallel; cloud's result wins because
+    # it returned non-empty text.
     controller._stt.recognize.assert_called_once()
-    controller._stt_whisper.recognize.assert_not_called()
+    controller._stt_whisper.recognize.assert_called_once()
+    controller._paste.paste.assert_called_once_with("Hello cloud.", 1)
 
 
 @pytest.mark.asyncio
@@ -282,7 +288,8 @@ async def test_stt_provider_switch_at_runtime(controller: AppController) -> None
     controller._stt.recognize.reset_mock()
     controller._stt_whisper.recognize.reset_mock()
 
-    # Second recording: switch to local
+    # Second recording: switch to local. With the parallel race in place,
+    # both providers are queried; cloud's result wins.
     controller.stt_provider = "local"
     with patch("voice_type.controller.capture_active_window", return_value=1), \
          patch("voice_type.controller.fast_clean", return_value="Cloud result."):
@@ -290,16 +297,21 @@ async def test_stt_provider_switch_at_runtime(controller: AppController) -> None
         await controller._handle_hotkey()  # RECORDING -> process
 
     controller._stt.recognize.assert_called_once()
-    controller._stt_whisper.recognize.assert_not_called()
+    controller._stt_whisper.recognize.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_local_stt_uses_whisper_for_long_audio(controller: AppController) -> None:
+async def test_local_stt_uses_whisper_only_for_very_long_audio(controller: AppController) -> None:
+    """Audio longer than the cloud sync-API window (~50s) skips cloud
+    entirely and uses whisper only. Cloud is reserved as fallback for an
+    empty whisper result.
+    """
     controller.stt_provider = "local"
     controller.mode = "fast"
     controller._recorder = MagicMock()
     controller._recorder.start = MagicMock()
-    controller._recorder.stop = MagicMock(return_value=np.full(16000 * 15, 500, dtype=np.int16))
+    # 55 seconds — past the 50s cloud-race threshold.
+    controller._recorder.stop = MagicMock(return_value=np.full(16000 * 55, 500, dtype=np.int16))
     controller._stt_whisper.recognize = AsyncMock(return_value="hello local long form")
     assert controller._stt is not None
     controller._stt.recognize = AsyncMock(return_value="hello cloud")

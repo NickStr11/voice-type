@@ -35,6 +35,7 @@ from loguru import logger
 from voice_type.audio import MicrophoneError, check_microphone_access
 from voice_type.config import load_config
 from voice_type.controller import AppController
+from voice_type.hotkey import HotkeyRegistrationError
 from voice_type.tray import TrayIcon
 
 
@@ -99,8 +100,20 @@ def main() -> None:
     controller = AppController(config, loop, tray=tray)
     controller_ref.append(controller)
 
-    # Step 6: Start hotkey listener in daemon thread
-    controller.start_hotkey_listener()
+    # Step 6: Start hotkey listener in daemon thread.
+    # We block briefly here (~<200ms) until RegisterHotKey returns so a
+    # taken hotkey combo surfaces as a clear error instead of a silently
+    # dead tray icon.
+    try:
+        controller.start_hotkey_listener()
+    except HotkeyRegistrationError as exc:
+        logger.error(
+            f"Hotkey registration failed: {exc}\n"
+            f"Another running application has likely claimed "
+            f"'{config.hotkey}'. Stop the conflicting app or change "
+            f"VOICETYPE_HOTKEY in .env to a free combination."
+        )
+        sys.exit(1)
 
     # Step 7: Start tray icon -- non-blocking, runs in its own daemon thread
     tray.run_detached()

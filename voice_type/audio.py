@@ -19,6 +19,7 @@ import threading
 import numpy as np
 import numpy.typing as npt
 import sounddevice as sd  # type: ignore[import-untyped]
+from loguru import logger
 
 SAMPLE_RATE: int = 16_000
 CHANNELS: int = 1
@@ -172,8 +173,19 @@ class AudioRecorder:
                 raise RuntimeError("AudioRecorder.stop() called without a prior start()")
             stream = self._stream
 
-        stream.stop()
-        stream.close()
+        # PortAudio teardown is best-effort: even if stop()/close() raise
+        # (driver state, device disconnect mid-record, USB hot-unplug), we
+        # MUST clear our internal pointers so the next start() works.
+        # Otherwise the recorder gets wedged into a "already recording"
+        # state and every subsequent toggle fails.
+        try:
+            stream.stop()
+        except Exception as exc:
+            logger.warning(f"PortAudio stop() raised, ignoring: {exc}")
+        try:
+            stream.close()
+        except Exception as exc:
+            logger.warning(f"PortAudio close() raised, ignoring: {exc}")
 
         with self._lock:
             self._stream = None
