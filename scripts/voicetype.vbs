@@ -1,7 +1,7 @@
 ' VoiceType watchdog: keeps pythonw -m voice_type.main alive.
 ' Auto-started by Startup\VoiceType.lnk. Runs hidden in wscript.exe.
 ' Checks every 30s, restarts worker if missing. Initial 15s delay
-' lets USB microphone (Fifine) and audio stack come up after logon.
+' lets the USB microphone and audio stack come up after logon.
 
 Option Explicit
 

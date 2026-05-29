@@ -254,13 +254,14 @@ class WhisperSTTClient:
             "temperature_inc": "0.2",
             "response_format": "json",
             "language": "auto",
-            # Personal vocabulary bias — Whisper conditions decoding on this
-            # text so terms below survive code-switching ru<->en. Keep under
-            # ~350 chars / ~50 tokens (Whisper context window).
+            # Vocabulary bias — Whisper conditions decoding on this text, so
+            # the terms below survive ru<->en code-switching and get spelled
+            # consistently. Customize with your own jargon (product names,
+            # acronyms, names you dictate often). Keep it under ~350 chars /
+            # ~50 tokens — that is Whisper's prompt context window.
             "prompt": (
-                "funding scanner, dashboard, digests, AAVE, USDC, Base, "
-                "PharmOrder, СКЛИТ, Cypher, VoiceType, Cortex, Telegram, "
-                "Брэдбери, Лакан, Делёз, Ницше, ROCm, CUDA, GGUF, Whisper"
+                "VoiceType, Cypher, Whisper, Telegram, GitHub, Python, "
+                "CUDA, ROCm, Vulkan, GGUF, API, SDK, LLM"
             ),
         }
 
