@@ -18,6 +18,9 @@ build/
 runtime/
 *.log
 
+# GSD planning artifacts — local only, kept out of the public repo
+.planning/
+
 # IDE
 .vscode/
 .idea/
