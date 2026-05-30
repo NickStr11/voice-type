@@ -85,31 +85,32 @@ def _split_paragraphs(text: str) -> str:
 
 
 def _split_by_sentence_groups(text: str, group_size: int = 3) -> str:
-    """Split long text into paragraph groups of N sentences.
+    """Group long runs of sentences into paragraphs.
 
-    Fallback for texts without explicit topic markers.
-    Groups every `group_size` sentences into a paragraph.
+    Runs *within* each existing paragraph, so it composes with the topic-marker
+    splits from _split_paragraphs instead of being switched off by them (the old
+    version bailed out entirely the moment any "\\n\\n" was present). A wall of
+    more than `group_size` sentences becomes one paragraph per `group_size`
+    sentences — the regex equivalent of "don't paste a 600-char monolith".
     """
-    if _count_sentences(text) < group_size * 2:
-        return text
+    out: list[str] = []
+    for para in text.split("\n\n"):
+        if _count_sentences(para) <= group_size:
+            out.append(para.strip())
+            continue
 
-    # Check if _split_paragraphs already added breaks
-    if "\n\n" in text:
-        return text
+        parts = re.split(r'([.!?]+\s*)', para)
+        chunk: list[str] = []
+        sentence_count = 0
+        for part in parts:
+            chunk.append(part)
+            if re.match(r'[.!?]+', part):
+                sentence_count += 1
+                if sentence_count % group_size == 0:
+                    chunk.append("\n\n")
+        out.append("".join(chunk).strip())
 
-    # Split by sentence endings, group by N
-    parts = re.split(r'([.!?]+\s*)', text)
-    result: list[str] = []
-    sentence_count = 0
-
-    for part in parts:
-        result.append(part)
-        if re.match(r'[.!?]+', part):
-            sentence_count += 1
-            if sentence_count % group_size == 0:
-                result.append("\n\n")
-
-    return "".join(result)
+    return "\n\n".join(out)
 
 
 def fast_clean(text: str) -> str:
@@ -137,8 +138,8 @@ def fast_clean(text: str) -> str:
     # Step 3: Split into paragraphs (topic markers)
     result = _split_paragraphs(result)
 
-    # Step 4: Fallback paragraph split for long texts without markers
-    result = _split_by_sentence_groups(result, group_size=4)
+    # Step 4: Group remaining long runs into paragraphs (composes with Step 3)
+    result = _split_by_sentence_groups(result, group_size=3)
 
     # Step 5: Clean up paragraph formatting
     result = _LEADING_PUNCT.sub("", result)

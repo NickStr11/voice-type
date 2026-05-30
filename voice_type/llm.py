@@ -22,15 +22,18 @@ from google.genai import types
 from loguru import logger
 
 _CLEANUP_PROMPT_TEMPLATE: Final[str] = (
-    "Clean up this voice transcription. Rules:\n"
-    "1. Fix punctuation, capitalization, and grammar.\n"
-    "2. Remove filler words (um, uh, ну, эм, короче, вот, типа, как бы, в общем).\n"
-    "3. Return the entire result as a single paragraph. "
-    "Do not insert blank lines or paragraph breaks.\n"
-    "4. When listing items (во-первых, во-вторых, 1, 2, 3, first, second), "
-    "put each item on a new line (single \\n, never blank lines).\n"
-    "5. Keep the original meaning and style. Do not add or invent content.\n"
-    "6. Output only the corrected text, nothing else.\n\n{text}"
+    "You format a raw voice transcription. You are a FORMATTER, not an editor.\n"
+    "Return the SAME text with formatting fixes ONLY:\n"
+    "1. Fix punctuation, capitalization and obvious grammar.\n"
+    "2. Remove only pure filler words (um, uh, ну, эм, короче, вот, типа, "
+    "как бы, в общем).\n"
+    "3. Split into paragraphs at topic shifts — separate paragraphs with a "
+    "blank line.\n"
+    "4. When the speaker enumerates (во-первых/во-вторых, 1/2/3, first/second), "
+    "put each item on its own new line.\n"
+    "5. Do NOT paraphrase, summarize, shorten, reorder or invent anything. "
+    "Keep every word the speaker said, in the original language.\n"
+    "6. Output only the formatted text, nothing else.\n\n{text}"
 )
 _MODEL: Final[str] = "gemini-2.5-flash"
 _TIMEOUT_S: Final[float] = 8.0
@@ -42,16 +45,30 @@ class LLMClient:
     def __init__(self, project: str | None = None) -> None:
         import os
 
-        project = project or os.environ.get("GCP_PROJECT_ID")
-        # Use Vertex AI backend — works with service account credentials
-        # (GOOGLE_APPLICATION_CREDENTIALS). The default API key path doesn't
-        # support service accounts.
-        self._client = genai.Client(
-            vertexai=True,
-            project=project,
-            location="us-central1",
-        )
-        logger.info(f"LLMClient ready — model: {_MODEL}, timeout: {_TIMEOUT_S}s, project: {project}")
+        api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+        project = (project or os.environ.get("GCP_PROJECT_ID", "") or "").strip()
+
+        if api_key:
+            # Public path: a free AI Studio key (https://aistudio.google.com/apikey).
+            # Audio never reaches Gemini — only the short transcript for cleanup —
+            # so the free tier covers normal personal use easily.
+            self._client: genai.Client | None = genai.Client(api_key=api_key)
+            self.available = True
+            backend = "AI Studio (GEMINI_API_KEY)"
+        elif project:
+            # Vertex path: service account via GOOGLE_APPLICATION_CREDENTIALS,
+            # billed to the GCP project (e.g. a free Vertex credit).
+            self._client = genai.Client(vertexai=True, project=project, location="us-central1")
+            self.available = True
+            backend = f"Vertex (project={project})"
+        else:
+            # No credentials — cleanup is disabled and the caller falls back to
+            # the regex fast_clean, so VoiceType still runs fully offline.
+            self._client = None
+            self.available = False
+            backend = "disabled (set GEMINI_API_KEY to enable Gemini cleanup)"
+
+        logger.info(f"LLMClient {backend} — model: {_MODEL}, timeout: {_TIMEOUT_S}s")
 
     def clean(self, raw_text: str) -> str:
         """Clean up raw STT transcription text via Gemini Flash.
@@ -65,13 +82,14 @@ class LLMClient:
         Returns:
             Cleaned text, or raw_text unchanged on timeout/error.
         """
-        if not raw_text.strip():
+        if not raw_text.strip() or self._client is None:
             return raw_text
 
+        client = self._client
         prompt = _CLEANUP_PROMPT_TEMPLATE.format(text=raw_text)
 
         def _sync_call() -> str:
-            response = self._client.models.generate_content(
+            response = client.models.generate_content(
                 model=_MODEL,
                 contents=prompt,
                 config=types.GenerateContentConfig(

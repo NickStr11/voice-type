@@ -40,12 +40,10 @@ from voice_type.stt_whisper import WhisperSTTClient
 from voice_type.tray import TrayIcon
 from voice_type.window import capture_active_window
 
+# Short utterances skip the LLM and get instant regex cleanup — never worth a
+# network round-trip for a couple of words.
 FAST_CLEANUP_MAX_DURATION_S = 3.0
 FAST_CLEANUP_MAX_CHARS = 120
-# Cloud Speech-to-Text v2 inline-audio sync API holds up to ~60s; we keep a
-# safety margin and only enroll utterances <=50s in the parallel race. Longer
-# audio runs whisper-only.
-LOCAL_STT_CLOUD_RETRY_MAX_DURATION_S = 50.0
 
 
 class AppController:
@@ -99,25 +97,22 @@ class AppController:
         )
 
     def _resolve_cleanup_mode(self, duration_s: float, raw_text: str) -> str:
-        """Select cleanup mode for the current utterance."""
+        """Select cleanup mode for the current utterance.
+
+        Short utterances → instant regex (fast_clean), never worth a network
+        round-trip. Long dictation → Gemini ("full"), which runs on Vertex (the
+        $1000 credit) and gives real paragraph/list structure while keeping the
+        user's words. fast_clean is the in-executor fallback if Gemini fails.
+        The local qwen path was benchmarked and dropped (1.5b paraphrased the
+        text; 3b was faithful but cost ~4s).
+        """
         if self.mode != "auto":
             return self.mode
-
-        stripped = raw_text.strip()
-
-        # Short utterances always go through regex-only cleanup.
         if duration_s <= FAST_CLEANUP_MAX_DURATION_S and len(raw_text) <= FAST_CLEANUP_MAX_CHARS:
             return "fast"
-
-        # If Whisper already gave us a properly-terminated sentence,
-        # skip the Gemini round-trip regardless of length — turbo's
-        # punctuation is usually good enough and the LLM polish rarely
-        # justifies its ~1.5-3s wall time. Falling through to "full"
-        # only when the text is long AND looks unfinished.
-        if stripped.endswith((".", "!", "?", "…")):
-            return "fast"
-
-        return "full"
+        # Gemini only when credentials exist; otherwise stay fully offline on
+        # regex fast_clean (public users without a GEMINI_API_KEY).
+        return "full" if self._llm.available else "fast"
 
     def start_hotkey_listener(self) -> None:
         """Start the hotkey listener in a daemon thread."""
@@ -214,7 +209,7 @@ class AppController:
 
             # STT + LLM cleanup — batch STT (streaming Chirp 3 is slower)
             audio_bytes = trimmed_audio.tobytes()
-            raw_text = await self._transcribe(audio_bytes, trimmed_duration_s)
+            raw_text = await self._transcribe(audio_bytes)
             t_stt = _time.perf_counter()
             logger.info(f"Batch STT done [{t_stt - t_stop:.2f}s]")
 
@@ -249,8 +244,8 @@ class AppController:
             if cleanup_mode == "full":
                 clean_text = await asyncio.to_thread(self._llm.clean, raw_text)
                 if not clean_text.strip():
-                    clean_text = raw_text
-                    logger.warning("LLM returned empty -- using raw STT")
+                    clean_text = fast_clean(raw_text)
+                    logger.warning("Gemini returned empty -- fell back to fast_clean")
                 t_llm = _time.perf_counter()
                 logger.info(f"Gemini cleanup [{t_llm - t_stt:.2f}s]")
             elif cleanup_mode == "fast":
@@ -281,76 +276,23 @@ class AppController:
                 self._tray.set_state(State.IDLE)
             logger.info("State: IDLE -- ready for next recording")
 
-    async def _transcribe(self, audio_bytes: bytes, duration_s: float) -> str:
+    async def _transcribe(self, audio_bytes: bytes) -> str:
         """Delegate transcription to the active STT provider.
 
-        Routes to WhisperSTTClient when stt_provider is 'local', or to
-        STTClient when 'cloud'. Raises RuntimeError if cloud is selected
-        but GCP credentials were not configured.
+        Local mode is whisper-only: local, free, offline. We no longer race
+        Cloud Chirp on every utterance — that billed GCP on each dictation and
+        was the source of mid-word splits ("пол ная") from joining Chirp result
+        fragments. Cloud STT stays only as a fallback when whisper returns
+        nothing (rare), so a transient whisper failure still produces text.
 
-        Local mode strategy (parallel cloud race):
-            * For audio <=50s (cloud sync-API safe window) AND with cloud
-              configured: start cloud and local Whisper *in parallel*,
-              then prefer cloud when it returns non-empty.
-            * If cloud raises any exception (network, quota, deadline) we
-              degrade gracefully to the already-computed local result —
-              we never crash a pipeline that already has a usable Whisper
-              transcript.
-            * Caller cancellation propagates: we cancel cloud_task and
-              re-raise so AppController.run() can exit cleanly.
-            * For audio >50s, cloud is skipped (sync inline-audio API
-              limit) and we run whisper-only with cloud fallback only if
-              whisper returns empty.
+        Cloud mode (stt_provider='cloud') uses Chirp directly; raises
+        RuntimeError if selected without GCP credentials.
         """
         if self.stt_provider == "local":
-            can_race = (
-                self._stt is not None
-                and duration_s <= LOCAL_STT_CLOUD_RETRY_MAX_DURATION_S
-            )
-
-            if not can_race:
-                local_text = await self._stt_whisper.recognize(audio_bytes)
-                if not local_text and self._stt is not None:
-                    logger.warning("Local STT returned empty -- falling back to cloud")
-                    return await self._stt.recognize(audio_bytes)
-                return local_text
-
-            # Both providers stay in flight; we prefer cloud when it
-            # succeeds because Chirp handles ru/en code-switching and
-            # short-form recognition more reliably than whisper-cpp.
-            # Whisper acts as fallback for empty/failing cloud calls.
-            assert self._stt is not None  # for type-checker — guarded by can_race
-            cloud_task = asyncio.create_task(self._stt.recognize(audio_bytes))
-
-            try:
-                local_text = await self._stt_whisper.recognize(audio_bytes)
-            except BaseException:
-                # Local path blew up: do not leak cloud_task.
-                cloud_task.cancel()
-                try:
-                    await cloud_task
-                except BaseException:
-                    pass
-                raise
-
-            logger.info("Whisper returned -- awaiting cloud race winner")
-            try:
-                cloud_text = await cloud_task
-            except asyncio.CancelledError:
-                # External cancellation (e.g. app shutdown). Propagate so
-                # AppController.run() can exit promptly — do not silently
-                # return a result to be pasted into a quitting app.
-                raise
-            except Exception as exc:
-                # Network / quota / DeadlineExceeded / auth errors must
-                # NOT destroy a usable whisper transcript. Degrade.
-                logger.warning(f"Cloud STT failed ({type(exc).__name__}: {exc}) -- using local result")
-                return local_text
-
-            if cloud_text.strip():
-                logger.info(f"Cloud race result used ({len(cloud_text)} chars)")
-                return cloud_text
-            logger.warning("Cloud race returned empty -- falling back to whisper local")
+            local_text = await self._stt_whisper.recognize(audio_bytes)
+            if not local_text and self._stt is not None:
+                logger.warning("Local STT empty -- falling back to cloud once")
+                return await self._stt.recognize(audio_bytes)
             return local_text
         if self._stt is None:
             raise RuntimeError(

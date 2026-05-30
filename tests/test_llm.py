@@ -4,7 +4,16 @@ from __future__ import annotations
 import concurrent.futures
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from voice_type.llm import LLMClient
+
+
+@pytest.fixture(autouse=True)
+def _gemini_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default tests through the AI Studio (api_key) backend so the mocked
+    genai.Client gets constructed. Individual tests override as needed."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
 
 
 def test_clean_returns_cleaned_text() -> None:
@@ -70,3 +79,24 @@ def test_clean_thinking_budget_zero() -> None:
         call_kwargs = mock_cls.return_value.models.generate_content.call_args.kwargs
         config = call_kwargs["config"]
         assert config.thinking_config.thinking_budget == 0
+
+
+def test_uses_api_key_backend_when_key_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A GEMINI_API_KEY routes through the free AI Studio backend, not Vertex."""
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-fake-key")
+    with patch("voice_type.llm.genai.Client") as mock_cls:
+        client = LLMClient()
+        assert client.available is True
+        assert mock_cls.call_args.kwargs.get("api_key") == "AIza-fake-key"
+
+
+def test_unavailable_without_key_or_project(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No GEMINI_API_KEY and no GCP project → cleanup disabled; clean() returns
+    raw text unchanged so the caller can fall back to regex fast_clean."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    with patch("voice_type.llm.genai.Client") as mock_cls:
+        client = LLMClient()
+        assert client.available is False
+        assert client.clean("раз два три") == "раз два три"
+        mock_cls.assert_not_called()
