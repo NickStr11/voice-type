@@ -5,8 +5,8 @@ appears in whatever window was focused. Includes **Cypher**, an optional
 voice assistant for launching apps, web search, and Telegram automation.
 
 - 🎙️ **Global hotkey** — toggle recording from anywhere, paste into the active window.
-- 🧠 **Two STT backends** — local **Whisper** (GPU, fully offline) or cloud **Google Chirp 3**.
-- ✨ **Smart cleanup** — regex (0 ms), local LLM (Ollama), or Gemini, picked automatically.
+- 🧠 **Local Whisper STT** — GPU, fully offline, free (cloud Chirp 3 is an optional fallback).
+- ✨ **Smart cleanup** — instant regex offline, or Gemini paragraphs/lists with a **free** API key.
 - 🤖 **Cypher voice agent** — say "Cypher, open VS Code" / "Cypher, send a screenshot to Telegram".
 - 🟢 **System tray** — switch backends and cleanup modes on the fly.
 - ♻️ **Autostart watchdog** — survives logoff/crash, keeps itself alive.
@@ -19,13 +19,19 @@ voice assistant for launching apps, web search, and Telegram automation.
 ## How it works
 
 ```
-hotkey ──▶ record mic ──▶ hotkey ──▶ STT ──▶ cleanup ──▶ paste into active window
-                                      │
-                          ┌───────────┴───────────┐
-                          │                       │
-                   local Whisper            Google Chirp 3
-                   (whisper.cpp, GPU)       (Cloud STT v2)
+hotkey ─▶ record mic ─▶ hotkey ─▶ Whisper STT (local) ─▶ cleanup ─▶ paste into active window
+                                                            │
+                                              ┌─────────────┴─────────────┐
+                                       short utterance              long dictation
+                                       regex (0 ms, offline)        Gemini (free key) ─┐
+                                                                                       │
+                                                          no key → regex fallback ◀─────┘
 ```
+
+Transcription runs **locally** with Whisper — your audio never leaves the
+machine. Long dictations are then tidied into paragraphs and lists by Gemini
+(only the short transcript is sent, never the audio). With no API key set,
+VoiceType runs **fully offline** and falls back to a fast regex cleanup.
 
 The window that is focused **when you stop recording** is the paste target —
 so you can start talking, tab away, and the text still lands in the right place.
@@ -41,11 +47,11 @@ routed to the Cypher command parser instead of being pasted.
 - **Python 3.12+**
 - [**uv**](https://docs.astral.sh/uv/) (package manager)
 - A working microphone
-- For **local STT**: a GPU + a [whisper.cpp](https://github.com/ggml-org/whisper.cpp) build (see [Local STT setup](#local-stt-setup-whisper))
-- For **cloud STT / Gemini cleanup**: a Google Cloud project with the Speech-to-Text and Vertex AI APIs enabled
+- A GPU + a [whisper.cpp](https://github.com/ggml-org/whisper.cpp) build for local STT (see [Local STT setup](#local-stt-setup-whisper))
+- *(optional)* a **free** [Gemini API key](https://aistudio.google.com/apikey) for LLM cleanup
 
-You only need *one* STT backend. Local is fully offline and free; cloud is
-zero-setup on the machine but needs GCP credentials.
+Everything runs offline with just Whisper. Add a free Gemini key only if you
+want polished paragraph/list formatting on long dictations.
 
 ---
 
@@ -71,6 +77,37 @@ Press the hotkey (default **Ctrl+Alt+R**) to start, press again to stop.
 
 ---
 
+## Text cleanup with Gemini (free API key)
+
+Whisper gives you the words; Gemini turns a long, rambly dictation into clean
+paragraphs and lists (it is a *formatter*, not an editor — it keeps your words).
+This is **optional and free** for normal use:
+
+1. Open **<https://aistudio.google.com/apikey>** and click **Create API key**
+   (no credit card required).
+2. Paste it into `.env`:
+   ```
+   GEMINI_API_KEY=AIza...your-key...
+   ```
+3. Restart VoiceType. Done.
+
+**Cost:** practically nothing. Your **audio stays local** — only the short
+transcript is sent for cleanup (a few hundred tokens per dictation). The free
+tier (hundreds of requests/day, large token budget) easily covers everyday
+personal dictation. Short utterances skip Gemini entirely and use the instant
+offline regex pass.
+
+**No key?** VoiceType still works fully offline — cleanup falls back to the
+regex pass (filler removal, punctuation, paragraph splitting). And if Gemini
+ever times out or errors, you still get your raw words.
+
+> Advanced: if you'd rather run Gemini through **Vertex AI** (service account /
+> GCP credits) instead of an AI Studio key, set `GCP_PROJECT_ID` +
+> `GOOGLE_APPLICATION_CREDENTIALS` and leave `GEMINI_API_KEY` empty. When both
+> are present, `GEMINI_API_KEY` wins.
+
+---
+
 ## Configuration
 
 All settings live in `.env` (copied from `.env.example`). `.env` is gitignored —
@@ -78,14 +115,15 @@ All settings live in `.env` (copied from `.env.example`). `.env` is gitignored �
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `VOICETYPE_STT_PROVIDER` | no | `cloud` | `local` (Whisper) or `cloud` (Chirp 3) |
+| `GEMINI_API_KEY` | no | — | Free AI Studio key — enables Gemini cleanup. Empty = offline regex cleanup |
+| `VOICETYPE_STT_PROVIDER` | no | `local` | `local` (Whisper, offline) or `cloud` (Chirp 3) |
 | `VOICETYPE_HOTKEY` | no | `<ctrl>+<alt>+r` | Recording toggle hotkey |
-| `VOICETYPE_WHISPER_MODEL` | no | `large-v3-turbo` | Model name (local only); file `ggml-<name>.bin` |
-| `GOOGLE_APPLICATION_CREDENTIALS` | for cloud | — | Path to GCP service-account JSON |
-| `GCP_PROJECT_ID` | for cloud | — | GCP project ID |
-| `VOICETYPE_STT_REGION` | no | `us` | Cloud STT regional endpoint prefix |
-| `VOICETYPE_CYPHER_PLANNER` | no | `off` | `gemini` enables the L2 natural-language command planner |
+| `VOICETYPE_WHISPER_MODEL` | no | `large-v3-turbo` | Model name (local); file `ggml-<name>.bin` |
+| `VOICETYPE_CYPHER_PLANNER` | no | `off` | `gemini` enables the L2 natural-language command planner (needs GCP) |
 | `VOICETYPE_CYPHER_PLANNER_MODEL` | no | `gemini-2.5-flash` | Planner model |
+| `GOOGLE_APPLICATION_CREDENTIALS` | advanced | — | GCP service-account JSON — for cloud STT or Vertex cleanup |
+| `GCP_PROJECT_ID` | advanced | — | GCP project ID |
+| `VOICETYPE_STT_REGION` | no | `us` | Cloud STT regional endpoint prefix |
 
 Config is validated at startup — a misconfigured app prints a clear error and
 exits instead of failing silently. GCP credentials are only required when
@@ -122,7 +160,7 @@ runtime/whisper-cpp/
 2. **Download a model** into `runtime/whisper-cpp/model/`. Models live on
    [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp). The filename
    must be `ggml-<VOICETYPE_WHISPER_MODEL>.bin`, e.g. `ggml-large-v3-turbo.bin`.
-3. Set `VOICETYPE_STT_PROVIDER=local` in `.env` and run.
+3. `VOICETYPE_STT_PROVIDER=local` is the default — just run.
 
 ### Choosing a GPU backend (Vulkan / CUDA / CPU)
 
@@ -160,12 +198,14 @@ backends, so **switching backend = swapping the binaries**.
 
 ---
 
-## Cloud STT setup (Google Chirp 3)
+## Advanced: cloud STT (Google Chirp 3)
 
-1. Create a Google Cloud project and enable **Cloud Speech-to-Text** and
-   **Vertex AI** APIs.
-2. Create a service account, grant it Speech-to-Text + Vertex AI access, and
-   download its JSON key.
+Local Whisper is the default. If you'd rather transcribe with Google's Chirp 3
+(strong on `ru-RU` + `en-US` code-switching), enable cloud STT:
+
+1. Create a Google Cloud project and enable the **Cloud Speech-to-Text** API.
+2. Create a service account, grant it Speech-to-Text access, and download its
+   JSON key.
 3. In `.env`:
    ```
    VOICETYPE_STT_PROVIDER=cloud
@@ -173,10 +213,9 @@ backends, so **switching backend = swapping the binaries**.
    GCP_PROJECT_ID=your-project-id
    ```
 
-Chirp 3 handles `ru-RU` + `en-US` and short-form/code-switching well. When you
-run in `local` mode **with** cloud also configured, VoiceType races both
-backends in parallel and prefers the cloud result, degrading gracefully to the
-local transcript if the cloud call fails.
+In the default `local` mode, cloud STT is also used as a one-shot **fallback**
+if a local Whisper call ever returns nothing — so a transient whisper hiccup
+still produces text (only when cloud is configured).
 
 ---
 
@@ -186,10 +225,10 @@ Selectable from the tray (or forced via the tray menu):
 
 | Mode | Engine | Latency | Notes |
 |---|---|---|---|
-| **Auto** (default) | picks per-utterance | — | short/finished → fast, long/unfinished → full |
+| **Auto** (default) | picks per-utterance | — | short → fast (regex); long → Gemini if a key is set, else fast |
 | **Fast** | regex | ~0 ms | filler removal, punctuation, paragraphs — fully offline |
-| **Local** | Ollama (`qwen2.5:1.5b`) | ~0.3 s | needs [Ollama](https://ollama.com/) running on `:11434` |
-| **Full** | Gemini 2.5 Flash (Vertex AI) | ~1.5–3 s | best polish, needs GCP creds |
+| **Full** | Gemini 2.5 Flash | ~2–3 s | best polish; needs `GEMINI_API_KEY` (free) or Vertex creds |
+| **Local** | Ollama | ~varies | optional; needs [Ollama](https://ollama.com/) on `:11434`. Small models may rephrase — prefer Fast or Full |
 
 All cleanup engines fail open: on timeout or error you still get your raw words.
 
@@ -212,8 +251,9 @@ Examples:
 - *"Cypher, write <chat>: I'll be there in 15 minutes"* — send a Telegram message
 
 A fast deterministic regex parser handles the common phrasings (L1). If you set
-`VOICETYPE_CYPHER_PLANNER=gemini`, an optional Gemini planner (L2) maps freer
-phrasings onto the **same** safe command set — it can never invent new actions.
+`VOICETYPE_CYPHER_PLANNER=gemini` (requires GCP / Vertex), an optional Gemini
+planner (L2) maps freer phrasings onto the **same** safe command set — it can
+never invent new actions.
 
 **Telegram automation** drives Telegram Web via a Playwright-controlled browser
 with a persistent profile under `runtime/playwright/` (gitignored). Log in once:
@@ -242,7 +282,7 @@ repo root relative to itself, so it works wherever the repo is checked out).
 ## Development
 
 ```bash
-uv run pytest        # 140 tests
+uv run pytest        # 143 tests
 uv run ruff check .  # lint
 uv run pyright       # type-check (strict)
 ```
@@ -258,8 +298,8 @@ voice_type/
 ├── hotkey.py          # Win32 RegisterHotKey listener
 ├── stt.py             # cloud STT (Google Chirp 3 / Speech v2)
 ├── stt_whisper.py     # local STT (whisper.cpp server + CLI fallback)
-├── llm.py             # Gemini cleanup (Vertex AI)
-├── llm_local.py       # Ollama cleanup
+├── llm.py             # Gemini cleanup (AI Studio key or Vertex AI)
+├── llm_local.py       # Ollama cleanup (optional)
 ├── cleanup.py         # regex fast-clean (filler removal, paragraphs)
 ├── paste.py           # paste into the captured foreground window
 ├── tray.py            # system tray icon + menus
