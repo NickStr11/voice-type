@@ -119,6 +119,7 @@ All settings live in `.env` (copied from `.env.example`). `.env` is gitignored �
 | `VOICETYPE_STT_PROVIDER` | no | `local` | `local` (Whisper, offline) or `cloud` (Chirp 3) |
 | `VOICETYPE_HOTKEY` | no | `<ctrl>+<alt>+r` | Recording toggle hotkey |
 | `VOICETYPE_WHISPER_MODEL` | no | `large-v3-turbo` | Model name (local); file `ggml-<name>.bin` |
+| `VOICETYPE_WHISPER_PROMPT` | no | neutral list | Comma-separated vocabulary bias — your jargon, for consistent spelling |
 | `VOICETYPE_CYPHER_PLANNER` | no | `off` | `gemini` enables the L2 natural-language command planner (needs GCP) |
 | `VOICETYPE_CYPHER_PLANNER_MODEL` | no | `gemini-2.5-flash` | Planner model |
 | `GOOGLE_APPLICATION_CREDENTIALS` | advanced | — | GCP service-account JSON — for cloud STT or Vertex cleanup |
@@ -191,10 +192,10 @@ backends, so **switching backend = swapping the binaries**.
   dependencies. VoiceType already falls back to CPU (`--no-gpu`) if the GPU path
   fails.
 
-> Tip: customize the dictation **vocabulary bias** for your own jargon (product
-> names, acronyms) in `voice_type/stt_whisper.py` (`_encode_multipart`, the
-> `prompt` field). It helps Whisper spell your terms consistently and survive
-> ru↔en code-switching.
+> Tip: set **`VOICETYPE_WHISPER_PROMPT`** in `.env` to a comma-separated list of
+> your own jargon (product names, acronyms, English terms you dictate). Whisper
+> conditions decoding on it, so those words get spelled consistently and survive
+> ru↔en code-switching. Measurably closes the gap to cloud STT on mixed speech.
 
 ---
 

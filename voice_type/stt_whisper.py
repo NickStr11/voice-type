@@ -51,6 +51,7 @@ class WhisperSTTClient:
 
     def __init__(self, config: AppConfig) -> None:
         self._model_name = config.whisper_model
+        self._prompt = config.whisper_prompt
         self._model_path = _MODEL_DIR / f"ggml-{self._model_name}.bin"
         self._server_ready = threading.Event()
         self._server_lock = threading.Lock()
@@ -254,15 +255,12 @@ class WhisperSTTClient:
             "temperature_inc": "0.2",
             "response_format": "json",
             "language": "auto",
-            # Vocabulary bias — Whisper conditions decoding on this text, so
-            # the terms below survive ru<->en code-switching and get spelled
-            # consistently. Customize with your own jargon (product names,
-            # acronyms, names you dictate often). Keep it under ~350 chars /
+            # Vocabulary bias — Whisper conditions decoding on this text, so the
+            # listed terms survive ru<->en code-switching and get spelled
+            # consistently. Configurable via VOICETYPE_WHISPER_PROMPT (see
+            # config.AppConfig.whisper_prompt). Keep it under ~350 chars /
             # ~50 tokens — that is Whisper's prompt context window.
-            "prompt": (
-                "VoiceType, Cypher, Whisper, Telegram, GitHub, Python, "
-                "CUDA, ROCm, Vulkan, GGUF, API, SDK, LLM"
-            ),
+            "prompt": self._prompt,
         }
 
         for name, value in fields.items():

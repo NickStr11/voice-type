@@ -11,6 +11,15 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# Whisper vocabulary-bias prompt — whisper conditions decoding on this text, so
+# listed terms survive ru<->en code-switching and get spelled consistently.
+# Neutral by default (public repo); override per-user via VOICETYPE_WHISPER_PROMPT
+# with your own jargon (product names, acronyms). Keep it under ~350 chars.
+_DEFAULT_WHISPER_PROMPT = (
+    "VoiceType, Cypher, Whisper, Telegram, GitHub, Python, "
+    "CUDA, ROCm, Vulkan, GGUF, API, SDK, LLM"
+)
+
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -36,6 +45,7 @@ class AppConfig:
     stt_region: str = "us"
     stt_provider: str = "cloud"
     whisper_model: str = "large-v3-turbo"
+    whisper_prompt: str = _DEFAULT_WHISPER_PROMPT
     cypher_planner: str = "off"
     cypher_planner_model: str = "gemini-2.5-flash"
 
@@ -68,6 +78,9 @@ def load_config() -> AppConfig:
 
     # --- WHISPER_MODEL (optional, has default) ---
     whisper_model = os.environ.get("VOICETYPE_WHISPER_MODEL", "large-v3-turbo").strip()
+
+    # --- WHISPER_PROMPT / vocabulary bias (optional, has default) ---
+    whisper_prompt = os.environ.get("VOICETYPE_WHISPER_PROMPT", "").strip() or _DEFAULT_WHISPER_PROMPT
 
     # --- CYPHER PLANNER (optional, has default) ---
     cypher_planner = os.environ.get("VOICETYPE_CYPHER_PLANNER", "off").strip().lower()
@@ -130,6 +143,7 @@ def load_config() -> AppConfig:
         stt_region=stt_region,
         stt_provider=stt_provider,
         whisper_model=whisper_model,
+        whisper_prompt=whisper_prompt,
         cypher_planner=cypher_planner,
         cypher_planner_model=cypher_planner_model,
     )
