@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from voice_type.config import AppConfig
-from voice_type.stt_whisper import WhisperSTTClient
+from voice_type.stt_whisper import WhisperSTTClient, _rejoin_wrapped_words
 
 
 @pytest.fixture()
@@ -190,3 +190,28 @@ def test_shutdown_terminates_managed_server(config: AppConfig) -> None:
     client.shutdown()
 
     process.terminate.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # Mid-word hard wraps from whisper.cpp (real samples from voicetype.log):
+        # a '\n' flanked by letters must be spliced out so the word rejoins.
+        ("по тво\nему мнению", "по твоему мнению"),
+        ("Прав\nильно я тебя", "Правильно я тебя"),
+        ("Я лиш\nний раз", "Я лишний раз"),
+        ("взаимодейству\nешь с", "взаимодействуешь с"),
+        ("другие репози\nтории", "другие репозитории"),
+        ("на один т\nекстовый запрос", "на один текстовый запрос"),
+        # Real boundaries (space/punct next to the '\n') are preserved as-is so
+        # the downstream whitespace-collapse turns them into a single space.
+        ("создавали? В\n принципе", "создавали? В\n принципе"),
+        ("для того,\n чтобы", "для того,\n чтобы"),
+        # Digits must NOT be merged (would change meaning), so a '\n' between
+        # numbers is left for the boundary path, not rejoined.
+        ("10\n20", "10\n20"),
+        ("", ""),
+    ],
+)
+def test_rejoin_wrapped_words(raw: str, expected: str) -> None:
+    assert _rejoin_wrapped_words(raw) == expected

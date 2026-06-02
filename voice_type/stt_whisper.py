@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -44,6 +45,20 @@ _SERVER_PORT = 8178
 _SERVER_URL = f"http://{_SERVER_HOST}:{_SERVER_PORT}"
 _SERVER_TIMEOUT_S = 60.0
 _SERVER_READY_TIMEOUT_S = 25.0
+
+# whisper.cpp hard-wraps long transcriptions at a fixed column width, inserting a
+# literal '\n' wherever the line hits the limit — frequently mid-word
+# ("тво\nему", "репози\nтории"). Downstream cleanup turns every '\n' into a
+# space, so the wrap surfaces as a mid-word space in the pasted text. A '\n'
+# flanked by letters on both sides is always such a wrap → splice it out so the
+# word rejoins. Every other '\n' (next to a space, digit, or punctuation) is a
+# real boundary and is left for the normal whitespace-collapse downstream.
+_MIDWORD_WRAP = re.compile(r"(?<=[^\W\d_])\n(?=[^\W\d_])")
+
+
+def _rejoin_wrapped_words(text: str) -> str:
+    """Repair whisper.cpp mid-word line wraps so the pasted text has no gaps."""
+    return _MIDWORD_WRAP.sub("", text)
 
 
 class WhisperSTTClient:
@@ -409,7 +424,8 @@ class WhisperSTTClient:
 
         text = await asyncio.to_thread(self._transcribe_sync, audio_bytes)
         logger.info(f"Whisper STT result: {len(text)} chars")
-        return text
+        logger.debug(f"Whisper RAW text: {text!r}")
+        return _rejoin_wrapped_words(text)
 
     def shutdown(self) -> None:
         self._stop_server_process()
