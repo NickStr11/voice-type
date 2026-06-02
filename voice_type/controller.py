@@ -260,6 +260,7 @@ class AppController:
                 logger.info(f"Local cleanup [{t_llm - t_stt:.2f}s]")
 
             # Paste into saved window
+            logger.debug(f"CLEANED text ({cleanup_mode}): {clean_text!r}")
             await asyncio.to_thread(self._paste.paste, clean_text, self._target_hwnd)
             t_end = _time.perf_counter()
             logger.info(
