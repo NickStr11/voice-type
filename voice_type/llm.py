@@ -21,6 +21,8 @@ from google import genai
 from google.genai import types
 from loguru import logger
 
+from voice_type.cleanup import fast_clean
+
 _CLEANUP_PROMPT_TEMPLATE: Final[str] = (
     "You format a raw voice transcription. You are a FORMATTER, not an editor.\n"
     "Return the SAME text with formatting fixes ONLY:\n"
@@ -82,8 +84,10 @@ class LLMClient:
         Returns:
             Cleaned text, or raw_text unchanged on timeout/error.
         """
-        if not raw_text.strip() or self._client is None:
+        if not raw_text.strip():
             return raw_text
+        if self._client is None:
+            return fast_clean(raw_text)
 
         client = self._client
         prompt = _CLEANUP_PROMPT_TEMPLATE.format(text=raw_text)
@@ -99,7 +103,7 @@ class LLMClient:
             )
             result = response.text
             if result is None:
-                return raw_text
+                return fast_clean(raw_text)
             return result.strip()
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
@@ -111,9 +115,9 @@ class LLMClient:
             except concurrent.futures.TimeoutError:
                 logger.warning(
                     f"LLMClient.clean() timed out after {_TIMEOUT_S}s — "
-                    "using raw STT text as fallback"
+                    "falling back to regex fast_clean"
                 )
-                return raw_text
+                return fast_clean(raw_text)
             except Exception as exc:
-                logger.warning(f"LLMClient.clean() error: {exc} — using raw STT text")
-                return raw_text
+                logger.warning(f"LLMClient.clean() error: {exc} — falling back to regex fast_clean")
+                return fast_clean(raw_text)

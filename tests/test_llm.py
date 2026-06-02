@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from voice_type.cleanup import fast_clean
 from voice_type.llm import LLMClient
 
 
@@ -27,8 +28,8 @@ def test_clean_returns_cleaned_text() -> None:
         assert result == "Привет, мир."
 
 
-def test_clean_timeout_returns_raw_text() -> None:
-    """When Gemini stalls, fallback to raw STT text (LLM-02)."""
+def test_clean_timeout_falls_back_to_fast_clean() -> None:
+    """When Gemini stalls, fall back to the regex fast_clean (LLM-02)."""
     with patch("voice_type.llm.genai.Client"):
         client = LLMClient()
 
@@ -36,17 +37,17 @@ def test_clean_timeout_returns_raw_text() -> None:
         with patch.object(concurrent.futures.Future, "result") as mock_result:
             mock_result.side_effect = concurrent.futures.TimeoutError()
             result = client.clean("raw stt text")
-            assert result == "raw stt text"
+            assert result == fast_clean("raw stt text")
 
 
-def test_clean_exception_returns_raw_text() -> None:
-    """Any Gemini exception falls back to raw text."""
+def test_clean_exception_falls_back_to_fast_clean() -> None:
+    """Any Gemini exception falls back to the regex fast_clean."""
     with patch("voice_type.llm.genai.Client") as mock_cls:
         mock_cls.return_value.models.generate_content.side_effect = RuntimeError("API error")
 
         client = LLMClient()
         result = client.clean("some text")
-        assert result == "some text"
+        assert result == fast_clean("some text")
 
 
 def test_clean_empty_string_returns_empty() -> None:
@@ -98,5 +99,6 @@ def test_unavailable_without_key_or_project(monkeypatch: pytest.MonkeyPatch) -> 
     with patch("voice_type.llm.genai.Client") as mock_cls:
         client = LLMClient()
         assert client.available is False
-        assert client.clean("раз два три") == "раз два три"
+        # No client → cleanup still formats locally via regex fast_clean.
+        assert client.clean("раз два три") == fast_clean("раз два три")
         mock_cls.assert_not_called()
