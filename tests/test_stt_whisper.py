@@ -153,6 +153,96 @@ async def test_cli_gpu_fallback_to_cpu(config: AppConfig, _mock_paths: tuple[Pat
     assert call_count == 3
 
 
+def test_cli_subprocess_gets_vulkan_env(
+    config: AppConfig, _mock_paths: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """Regression guard: _VULKAN_ENV must reach the whisper-cli subprocess."""
+    cli, model = _mock_paths
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured.update(kwargs)
+        of_idx = cmd.index("-of") + 1
+        _make_json_output(cmd[of_idx], "ok")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with (
+        patch("voice_type.stt_whisper._CLI_EXE", cli),
+        patch("voice_type.stt_whisper._MODEL_DIR", model.parent),
+        patch("voice_type.stt_whisper._WHISPER_DIR", tmp_path),
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
+        patch("subprocess.run", side_effect=fake_run),
+    ):
+        client = WhisperSTTClient(config)
+        client._server_ready.set()
+        wav = tmp_path / "clip.wav"
+        wav.write_bytes(b"")
+        client._run_cli(str(wav), use_gpu=True)
+
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["VK_LOADER_LAYERS_DISABLE"] == "~implicit~"
+    assert env["GGML_VK_DISABLE_COOPMAT"] == "1"
+
+
+def test_server_subprocess_gets_vulkan_env(
+    config: AppConfig, _mock_paths: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """Regression guard: _VULKAN_ENV must reach the whisper-server subprocess."""
+    cli, model = _mock_paths
+    captured: dict[str, object] = {}
+
+    def fake_popen(args: list[str], **kwargs: object) -> MagicMock:
+        captured.update(kwargs)
+        return MagicMock()
+
+    with (
+        patch("voice_type.stt_whisper._SERVER_EXE", cli.with_name("whisper-server.exe")),
+        patch("voice_type.stt_whisper._MODEL_DIR", model.parent),
+        patch("voice_type.stt_whisper._WHISPER_DIR", tmp_path),
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
+        patch("subprocess.Popen", side_effect=fake_popen),
+    ):
+        client = WhisperSTTClient(config)
+        client._launch_server_process()
+
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["VK_LOADER_LAYERS_DISABLE"] == "~implicit~"
+    assert env["GGML_VK_DISABLE_COOPMAT"] == "1"
+
+
+def test_resume_watch_restarts_on_sleep_gap(config: AppConfig) -> None:
+    """A large wall-clock gap (system resume) triggers a proactive server restart."""
+    with patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True):
+        client = WhisperSTTClient(config)
+    # is_set(): enter loop, post-wait check, then exit on the next loop top.
+    client._stop_watch = MagicMock()
+    client._stop_watch.is_set.side_effect = [False, False, True]
+    times = iter([1000.0, 1000.0 + 5000.0])  # last, then now after a 5000s sleep
+    with (
+        patch("voice_type.stt_whisper.time.time", side_effect=lambda: next(times)),
+        patch.object(client, "_restart_server_sync") as mock_restart,
+    ):
+        client._resume_watch_loop()
+    mock_restart.assert_called_once()
+
+
+def test_resume_watch_ignores_normal_interval(config: AppConfig) -> None:
+    """A normal poll interval must NOT restart the server."""
+    with patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True):
+        client = WhisperSTTClient(config)
+    client._stop_watch = MagicMock()
+    client._stop_watch.is_set.side_effect = [False, False, True]
+    times = iter([1000.0, 1030.0])  # 30s gap — ordinary tick
+    with (
+        patch("voice_type.stt_whisper.time.time", side_effect=lambda: next(times)),
+        patch.object(client, "_restart_server_sync") as mock_restart,
+    ):
+        client._resume_watch_loop()
+    mock_restart.assert_not_called()
+
+
 def test_missing_binary_raises(config: AppConfig) -> None:
     with (
         patch("voice_type.stt_whisper._CLI_EXE", Path("/nonexistent/whisper-cli.exe")),

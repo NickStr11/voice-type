@@ -11,9 +11,12 @@ Fallback path:
 - If GPU fails, final fallback is CPU (--no-gpu).
 
 Notes:
-- Current runtime build is whisper.cpp v1.8.4; server no_context is already on
-  by default, so there is no -nc CLI flag here.
+- Current runtime build is whisper.cpp v1.8.6 (Vulkan, MinGW); server no_context
+  is already on by default, so there is no -nc CLI flag here.
 - GGML_NO_BACKTRACE=1 is required for the MinGW build on this machine.
+- _VULKAN_ENV is injected into both server and CLI subprocesses to survive an
+  AMD driver update that broke Vulkan; see docs/learned-the-hard-way.md §3.
+  Rebuild recipe: scripts/build-whisper-vulkan.ps1.
 """
 from __future__ import annotations
 
@@ -46,6 +49,27 @@ _SERVER_URL = f"http://{_SERVER_HOST}:{_SERVER_PORT}"
 _SERVER_TIMEOUT_S = 60.0
 _SERVER_READY_TIMEOUT_S = 25.0
 
+# Wall-clock gap watcher: if more than _RESUME_POLL_S + _RESUME_GAP_S of real
+# time elapses between ticks, the machine was suspended (sleep/hibernate). The
+# whisper-server's Vulkan device is invalidated across resume (first /inference
+# then 500s — see docs/learned-the-hard-way.md §4), so we proactively restart
+# the server to rebuild the GPU context before the next recording.
+_RESUME_POLL_S = 30.0
+_RESUME_GAP_S = 90.0
+
+# Vulkan workarounds for AMD RX 7800 XT after a driver update (2026-06-08):
+# - VK_LOADER_LAYERS_DISABLE=~implicit~ — overlay/capture implicit layers
+#   (Bandicam, RenderDoc, Steam overlay, AMD switchable-graphics) crashed
+#   whisper on the first VRAM allocation. Disabling them only for our own
+#   subprocess leaves those tools working everywhere else.
+# - GGML_VK_DISABLE_COOPMAT=1 — KHR_coopmat matmul path crashes during compute
+#   on this driver; the fallback path runs fine (~1.2s vs ~35s CPU).
+# See docs/learned-the-hard-way.md §3.
+_VULKAN_ENV = {
+    "VK_LOADER_LAYERS_DISABLE": "~implicit~",
+    "GGML_VK_DISABLE_COOPMAT": "1",
+}
+
 # whisper.cpp hard-wraps long transcriptions at a fixed column width, inserting a
 # literal '\n' wherever the line hits the limit — frequently mid-word
 # ("тво\nему", "репози\nтории"). Downstream cleanup turns every '\n' into a
@@ -77,12 +101,19 @@ class WhisperSTTClient:
         self._server_stdout_handle: BinaryIO | None = None
         self._server_stderr_handle: BinaryIO | None = None
         self._server_start_error: str | None = None
+        self._stop_watch = threading.Event()
+        self._resume_watch_thread: threading.Thread | None = None
+        # Consecutive times STT fell all the way back to CPU (both GPU attempts
+        # failed). >0 means the GPU/Vulkan hot path is currently dead — see
+        # _note_cpu_fallback / docs/learned-the-hard-way.md §3.
+        self._cpu_fallback_streak = 0
 
         if not _SERVER_EXE.exists() or not self._model_path.exists():
             self._server_ready.set()
             logger.warning("Whisper server unavailable at startup — CLI fallback only")
         else:
             self._ensure_server_background()
+            self._start_resume_watch()
 
         logger.info(f"WhisperSTTClient ready (model={self._model_name}, server preferred)")
 
@@ -156,6 +187,7 @@ class WhisperSTTClient:
             **os.environ,
             "PATH": f"{_WHISPER_DIR};{os.environ.get('PATH', '')}",
             "GGML_NO_BACKTRACE": "1",
+            **_VULKAN_ENV,
         }
         args = [
             str(_SERVER_EXE),
@@ -227,6 +259,37 @@ class WhisperSTTClient:
             self._server_managed = False
             self._server_start_error = None
             self._start_server_worker()
+
+    def _start_resume_watch(self) -> None:
+        if self._resume_watch_thread is not None:
+            return
+        self._resume_watch_thread = threading.Thread(
+            target=self._resume_watch_loop,
+            name="whisper-resume-watch",
+            daemon=True,
+        )
+        self._resume_watch_thread.start()
+
+    def _resume_watch_loop(self) -> None:
+        """Detect resume-from-sleep via a wall-clock gap and rebuild the server."""
+        last = time.time()
+        while not self._stop_watch.is_set():
+            self._stop_watch.wait(_RESUME_POLL_S)
+            if self._stop_watch.is_set():
+                break
+            now = time.time()
+            gap = now - last
+            last = now
+            if gap > _RESUME_POLL_S + _RESUME_GAP_S:
+                logger.info(
+                    "Detected %.0fs wall-clock gap (system resume) — proactively "
+                    "restarting whisper-server to rebuild Vulkan context",
+                    gap,
+                )
+                try:
+                    self._restart_server_sync()
+                except Exception as exc:  # noqa: BLE001 — watcher must never die
+                    logger.warning("Resume restart failed: %s", exc)
 
     def _run_server(self, audio_bytes: bytes) -> str:
         wav_path = _WHISPER_DIR / f"server_audio_{uuid.uuid4().hex[:8]}.wav"
@@ -326,7 +389,7 @@ class WhisperSTTClient:
         else:
             cmd.append("--no-gpu")
 
-        env = {**os.environ, "GGML_NO_BACKTRACE": "1"}
+        env = {**os.environ, "GGML_NO_BACKTRACE": "1", **_VULKAN_ENV}
         t0 = time.perf_counter()
         try:
             result = subprocess.run(
@@ -363,6 +426,23 @@ class WhisperSTTClient:
                 json_path.unlink(missing_ok=True)
         return ""
 
+    def _note_gpu_alive(self) -> None:
+        """GPU/Vulkan path produced a result — clear any CPU-fallback streak."""
+        if self._cpu_fallback_streak:
+            logger.info("GPU STT path recovered after %d CPU fallback(s)", self._cpu_fallback_streak)
+            self._cpu_fallback_streak = 0
+
+    def _note_cpu_fallback(self) -> None:
+        """Both GPU attempts failed; record + loudly flag the degraded state once."""
+        self._cpu_fallback_streak += 1
+        if self._cpu_fallback_streak == 1:
+            logger.error(
+                "GPU STT path dead — running on CPU (~35s/clip vs ~0.3s hot). "
+                "Likely an AMD driver update broke Vulkan; see docs/learned-the-hard-way.md §3."
+            )
+        else:
+            logger.debug("STT still on CPU (streak=%d)", self._cpu_fallback_streak)
+
     def _transcribe_sync(self, audio_bytes: bytes) -> str:
         if self._server_thread is not None:
             self._server_ready.wait(timeout=_SERVER_READY_TIMEOUT_S)
@@ -370,6 +450,7 @@ class WhisperSTTClient:
         if self._server_available and self._server_healthcheck():
             text = self._run_server(audio_bytes)
             if text:
+                self._note_gpu_alive()
                 return text
 
             logger.warning("whisper-server failed once, restarting and retrying once")
@@ -377,6 +458,7 @@ class WhisperSTTClient:
             if self._server_available and self._server_healthcheck():
                 text = self._run_server(audio_bytes)
                 if text:
+                    self._note_gpu_alive()
                     return text
 
         if self._server_start_error:
@@ -406,11 +488,13 @@ class WhisperSTTClient:
             for attempt in range(2):
                 text = self._run_cli(wav_path, use_gpu=True)
                 if text:
+                    self._note_gpu_alive()
                     return text
                 if attempt == 0:
                     logger.warning("CLI GPU attempt 1 failed, retrying GPU...")
 
             logger.warning("CLI GPU failed twice, falling back to CPU")
+            self._note_cpu_fallback()
             return self._run_cli(wav_path, use_gpu=False)
         finally:
             try:
@@ -428,4 +512,5 @@ class WhisperSTTClient:
         return _rejoin_wrapped_words(text)
 
     def shutdown(self) -> None:
+        self._stop_watch.set()
         self._stop_server_process()
