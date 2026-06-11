@@ -28,20 +28,32 @@ shell.CurrentDirectory = repoRoot
 
 Do
     If Not IsWorkerAlive() Then
+        On Error Resume Next
         shell.Run cmdLine, 0, False
+        On Error GoTo 0
     End If
     WScript.Sleep checkIntervalMs
 Loop
 
 Function IsWorkerAlive()
+    ' Hardened: a transient WMI hiccup must never terminate the watchdog loop.
+    ' On error we assume the worker is alive (return True) so we also avoid
+    ' spawning a duplicate instance during the glitch.
+    On Error Resume Next
     Dim procs, proc
+    IsWorkerAlive = False
     Set procs = wmi.ExecQuery( _
         "SELECT ProcessId FROM Win32_Process " & _
         "WHERE (Name = 'pythonw.exe' OR Name = 'python.exe') " & _
         "AND CommandLine LIKE '%voice_type.main%'")
-    IsWorkerAlive = False
+    If Err.Number <> 0 Then
+        IsWorkerAlive = True
+        Err.Clear
+        Exit Function
+    End If
     For Each proc In procs
         IsWorkerAlive = True
         Exit For
     Next
+    On Error GoTo 0
 End Function
