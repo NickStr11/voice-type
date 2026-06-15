@@ -39,14 +39,28 @@ from voice_type.hotkey import HotkeyRegistrationError
 from voice_type.tray import TrayIcon
 
 
+def configure_logging(runtime_dir: Path, log_level: str = "INFO") -> None:
+    runtime_dir.mkdir(exist_ok=True)
+    logger.add(
+        runtime_dir / "voicetype.log",
+        level=log_level,
+        encoding="utf-8",
+        rotation="5 MB",
+        retention="14 days",
+    )
+
+
+def effective_file_log_level(log_level: str, log_transcripts: bool) -> str:
+    return "DEBUG" if log_transcripts else log_level
+
+
 def main() -> None:
     """Entry point for `uv run voice-type` or `python -m voice_type.main`."""
     runtime_dir = Path(__file__).parent.parent / "runtime"
-    runtime_dir.mkdir(exist_ok=True)
-    logger.add(runtime_dir / "voicetype.log", level="DEBUG", encoding="utf-8")
 
     # Step 1: Load configuration -- exits 1 on bad config (SYS-03)
     config = load_config()
+    configure_logging(runtime_dir, effective_file_log_level(config.log_level, config.log_transcripts))
     logger.info(f"Config loaded -- hotkey: {config.hotkey}, project: {config.gcp_project_id}")
 
     # Step 2: Microphone access check -- exits 1 with clear instructions (SYS-02)

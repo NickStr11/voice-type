@@ -73,6 +73,10 @@ def test_command_from_json(payload: str, expected: CypherCommand) -> None:
         '{"kind":"delete_everything","value":"C:\\\\"}',
         '{"kind":"telegram_send_message","value":"Adam"}',
         '{"kind":"open_app","value":""}',
+        '{"kind":"open_url","value":"file:///C:/Windows/System32/cmd.exe"}',
+        '{"kind":"open_url","value":"ms-settings:"}',
+        '{"kind":"open_app","value":"powershell"}',
+        '{"kind":"open_app","value":"terminal"}',
         'not json',
     ],
 )

@@ -28,10 +28,10 @@ hotkey ─▶ record mic ─▶ hotkey ─▶ Whisper STT (local) ─▶ cleanup
                                                           no key → regex fallback ◀─────┘
 ```
 
-Transcription runs **locally** with Whisper — your audio never leaves the
-machine. Long dictations are then tidied into paragraphs and lists by Gemini
-(only the short transcript is sent, never the audio). With no API key set,
-VoiceType runs **fully offline** and falls back to a fast regex cleanup.
+Transcription runs **locally** with Whisper by default — your audio never
+leaves the machine. Long dictations are then tidied into paragraphs and lists
+by Gemini (only the short transcript is sent, never the audio). With no API key
+set, VoiceType runs **fully offline** and falls back to a fast regex cleanup.
 
 The window that is focused **when you stop recording** is the paste target —
 so you can start talking, tab away, and the text still lands in the right place.
@@ -117,9 +117,12 @@ All settings live in `.env` (copied from `.env.example`). `.env` is gitignored �
 |---|---|---|---|
 | `GEMINI_API_KEY` | no | — | Free AI Studio key — enables Gemini cleanup. Empty = offline regex cleanup |
 | `VOICETYPE_STT_PROVIDER` | no | `local` | `local` (Whisper, offline) or `cloud` (Chirp 3) |
+| `VOICETYPE_CLOUD_FALLBACK` | no | `0` | If `1`, local mode retries empty Whisper results with cloud STT. Audio may leave the machine |
 | `VOICETYPE_HOTKEY` | no | `<ctrl>+<alt>+r` | Recording toggle hotkey |
 | `VOICETYPE_WHISPER_MODEL` | no | `large-v3-turbo` | Model name (local); file `ggml-<name>.bin` |
 | `VOICETYPE_WHISPER_PROMPT` | no | neutral list | Comma-separated vocabulary bias — your jargon, for consistent spelling |
+| `VOICETYPE_LOG_LEVEL` | no | `INFO` | File log level |
+| `VOICETYPE_LOG_TRANSCRIPTS` | no | `0` | If `1`, writes raw/cleaned dictated text to logs for debugging |
 | `VOICETYPE_CYPHER_PLANNER` | no | `off` | `gemini` enables the L2 natural-language command planner (needs GCP) |
 | `VOICETYPE_CYPHER_PLANNER_MODEL` | no | `gemini-2.5-flash` | Planner model |
 | `GOOGLE_APPLICATION_CREDENTIALS` | advanced | — | GCP service-account JSON — for cloud STT or Vertex cleanup |
@@ -214,9 +217,9 @@ Local Whisper is the default. If you'd rather transcribe with Google's Chirp 3
    GCP_PROJECT_ID=your-project-id
    ```
 
-In the default `local` mode, cloud STT is also used as a one-shot **fallback**
-if a local Whisper call ever returns nothing — so a transient whisper hiccup
-still produces text (only when cloud is configured).
+In the default `local` mode, cloud STT is **not** used. If you explicitly set
+`VOICETYPE_CLOUD_FALLBACK=1`, VoiceType uses cloud STT as a one-shot fallback
+when local Whisper returns nothing (only when GCP credentials are configured).
 
 ---
 
@@ -278,12 +281,25 @@ Startup folder (`shell:startup`).
 `scripts/restart.bat` kills and relaunches the worker manually (resolves the
 repo root relative to itself, so it works wherever the repo is checked out).
 
+To inspect login triggers and running workers/watchdogs:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/audit-autostart.ps1
+```
+
+If it reports duplicate login triggers (`HKCU Run` + `Startup` link), remove the
+Startup link safely with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/audit-autostart.ps1 -RemoveStartupLinkIfRunKeyExists
+```
+
 ---
 
 ## Development
 
 ```bash
-uv run pytest        # 143 tests
+uv run pytest        # 177 tests
 uv run ruff check .  # lint
 uv run pyright       # type-check (strict)
 ```

@@ -34,8 +34,8 @@ class AppConfig:
                         Empty string when stt_provider is "local".
         stt_region: Regional endpoint prefix for STT. Default: us.
                     Full endpoint will be "{stt_region}-speech.googleapis.com".
-        stt_provider: STT backend to use. "cloud" (Google Chirp 3) or "local" (Whisper).
-                      Default: "cloud" for backward compatibility.
+    stt_provider: STT backend to use. "cloud" (Google Chirp 3) or "local" (Whisper).
+                      Default: "local" so audio stays on-device unless opted in.
         whisper_model: Faster-whisper model name. Only used when stt_provider="local".
                        Default: "large-v3-turbo" (fast, ~1.6GB).
     """
@@ -43,11 +43,21 @@ class AppConfig:
     gcp_credentials_path: Path | None
     gcp_project_id: str
     stt_region: str = "us"
-    stt_provider: str = "cloud"
+    stt_provider: str = "local"
     whisper_model: str = "large-v3-turbo"
     whisper_prompt: str = _DEFAULT_WHISPER_PROMPT
     cypher_planner: str = "off"
     cypher_planner_model: str = "gemini-2.5-flash"
+    cloud_fallback: bool = False
+    log_transcripts: bool = False
+    log_level: str = "INFO"
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def load_config() -> AppConfig:
@@ -58,7 +68,7 @@ def load_config() -> AppConfig:
     invalid — this is intentional: a misconfigured app should not start silently.
 
     When stt_provider is "local", GCP credentials are optional (not required).
-    When stt_provider is "cloud" (default), GCP credentials are required.
+    When stt_provider is "cloud" or cloud fallback is enabled, GCP credentials are required.
 
     Returns:
         Validated AppConfig instance.
@@ -74,7 +84,7 @@ def load_config() -> AppConfig:
     errors: list[str] = []
 
     # --- STT_PROVIDER (optional, has default) ---
-    stt_provider = os.environ.get("VOICETYPE_STT_PROVIDER", "cloud").strip().lower()
+    stt_provider = os.environ.get("VOICETYPE_STT_PROVIDER", "local").strip().lower()
 
     # --- WHISPER_MODEL (optional, has default) ---
     whisper_model = os.environ.get("VOICETYPE_WHISPER_MODEL", "large-v3-turbo").strip()
@@ -92,6 +102,11 @@ def load_config() -> AppConfig:
 
     cypher_planner_model = os.environ.get("VOICETYPE_CYPHER_PLANNER_MODEL", "gemini-2.5-flash").strip()
 
+    # --- Privacy / logging ---
+    cloud_fallback = _env_bool("VOICETYPE_CLOUD_FALLBACK")
+    log_transcripts = _env_bool("VOICETYPE_LOG_TRANSCRIPTS")
+    log_level = os.environ.get("VOICETYPE_LOG_LEVEL", "INFO").strip().upper() or "INFO"
+
     # --- GCP credentials — only required for cloud provider ---
     creds_path: Path | None = None
     raw_creds = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
@@ -101,7 +116,7 @@ def load_config() -> AppConfig:
             creds_path = resolved
     gcp_project_id = os.environ.get("GCP_PROJECT_ID", "").strip()
 
-    requires_gcp = stt_provider != "local" or cypher_planner == "gemini"
+    requires_gcp = stt_provider != "local" or cloud_fallback or cypher_planner == "gemini"
 
     if requires_gcp:
         if not raw_creds:
@@ -146,6 +161,9 @@ def load_config() -> AppConfig:
         whisper_prompt=whisper_prompt,
         cypher_planner=cypher_planner,
         cypher_planner_model=cypher_planner_model,
+        cloud_fallback=cloud_fallback,
+        log_transcripts=log_transcripts,
+        log_level=log_level,
     )
 
 
@@ -158,6 +176,9 @@ if __name__ == "__main__":
     print(f"stt_region:           {cfg.stt_region}")
     print(f"stt_provider:         {cfg.stt_provider}")
     print(f"whisper_model:        {cfg.whisper_model}")
+    print(f"cloud_fallback:       {cfg.cloud_fallback}")
+    print(f"log_transcripts:      {cfg.log_transcripts}")
+    print(f"log_level:            {cfg.log_level}")
     print(f"cypher_planner:       {cfg.cypher_planner}")
     print(f"cypher_planner_model: {cfg.cypher_planner_model}")
     print("Config loaded successfully.")

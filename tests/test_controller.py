@@ -327,8 +327,7 @@ async def test_local_stt_long_audio_uses_whisper_only(controller: AppController)
 
 @pytest.mark.asyncio
 async def test_local_stt_falls_back_to_cloud_when_whisper_empty(controller: AppController) -> None:
-    """If whisper returns nothing, cloud STT is the one-shot fallback so a
-    transient whisper failure still produces text."""
+    """Local mode does not send audio to cloud when fallback is disabled."""
     controller.stt_provider = "local"
     controller.mode = "fast"
     controller._recorder = MagicMock()
@@ -338,6 +337,7 @@ async def test_local_stt_falls_back_to_cloud_when_whisper_empty(controller: AppC
     assert controller._stt is not None
     controller._stt.recognize = AsyncMock(return_value="Could we discuss this now?")
     controller._paste.paste = MagicMock()
+    controller._cloud_fallback_enabled = False
 
     with patch("voice_type.controller.capture_active_window", return_value=10), \
          patch("voice_type.controller.fast_clean", return_value="Could we discuss this now?"):
@@ -345,8 +345,49 @@ async def test_local_stt_falls_back_to_cloud_when_whisper_empty(controller: AppC
         await controller._handle_hotkey()
 
     controller._stt_whisper.recognize.assert_called_once()
+    controller._stt.recognize.assert_not_called()
+    controller._paste.paste.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_local_stt_cloud_fallback_requires_explicit_opt_in(controller: AppController) -> None:
+    """If explicitly enabled, cloud STT is the one-shot fallback for empty Whisper output."""
+    controller.stt_provider = "local"
+    controller.mode = "fast"
+    controller._recorder = MagicMock()
+    controller._recorder.start = MagicMock()
+    controller._recorder.stop = MagicMock(return_value=np.full(16000 * 5, 500, dtype=np.int16))
+    controller._stt_whisper.recognize = AsyncMock(return_value="")
+    assert controller._stt is not None
+    controller._stt.recognize = AsyncMock(return_value="Could we discuss this now?")
+    controller._paste.paste = MagicMock()
+    controller._cloud_fallback_enabled = True
+
+    with patch("voice_type.controller.capture_active_window", return_value=10), \
+         patch("voice_type.controller.fast_clean", return_value="Could we discuss this now?"):
+        await controller._handle_hotkey()
+        await controller._handle_hotkey()
+
     controller._stt.recognize.assert_called_once()
     controller._paste.paste.assert_called_once_with("Could we discuss this now?", 10)
+
+
+@pytest.mark.asyncio
+async def test_cleaned_transcript_is_not_logged_by_default(controller: AppController) -> None:
+    controller.mode = "fast"
+    controller._recorder = MagicMock()
+    controller._recorder.start = MagicMock()
+    controller._recorder.stop = MagicMock(return_value=np.full(16000 * 5, 500, dtype=np.int16))
+    controller._stt.recognize = AsyncMock(return_value="private dictation")
+    controller._paste.paste = MagicMock()
+
+    with patch("voice_type.controller.capture_active_window", return_value=10), \
+         patch("voice_type.controller.fast_clean", return_value="Private dictation."), \
+         patch("voice_type.controller.logger.debug") as mock_debug:
+        await controller._handle_hotkey()
+        await controller._handle_hotkey()
+
+    assert not any("CLEANED text" in str(call.args[0]) for call in mock_debug.call_args_list)
 
 
 @pytest.mark.asyncio

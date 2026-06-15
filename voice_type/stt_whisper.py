@@ -91,6 +91,7 @@ class WhisperSTTClient:
     def __init__(self, config: AppConfig) -> None:
         self._model_name = config.whisper_model
         self._prompt = config.whisper_prompt
+        self._log_transcripts = config.log_transcripts
         self._model_path = _MODEL_DIR / f"ggml-{self._model_name}.bin"
         self._server_ready = threading.Event()
         self._server_lock = threading.Lock()
@@ -508,7 +509,8 @@ class WhisperSTTClient:
 
         text = await asyncio.to_thread(self._transcribe_sync, audio_bytes)
         logger.info(f"Whisper STT result: {len(text)} chars")
-        logger.debug(f"Whisper RAW text: {text!r}")
+        if self._log_transcripts:
+            logger.debug(f"Whisper RAW text: {text!r}")
         return _rejoin_wrapped_words(text)
 
     def shutdown(self) -> None:

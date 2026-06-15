@@ -16,7 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeVar
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 from loguru import logger
 
@@ -114,6 +114,16 @@ _SAVED_MESSAGES_CHAT = "Saved Messages"
 _EMBEDDED_URL_RE = re.compile(
     r"\b((?:https?://)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s]*)?)",
     re.IGNORECASE,
+)
+_SENSITIVE_APP_MARKERS = (
+    "cmd",
+    "command prompt",
+    "powershell",
+    "power shell",
+    "terminal",
+    "windows terminal",
+    "registry editor",
+    "regedit",
 )
 
 @dataclass(frozen=True)
@@ -363,7 +373,10 @@ class CypherExecutor:
     def execute(self, command: CypherCommand) -> str | None:
         logger.info(f"Cypher execute: {command.kind} -> {command.spoken_target}")
         if command.kind == "open_url":
-            webbrowser.open(command.value, new=0, autoraise=True)
+            url = normalize_open_url(command.value)
+            if url is None:
+                raise PermissionError(f"Cypher refused unsafe URL target: {command.value}")
+            webbrowser.open(url, new=0, autoraise=True)
             return None
         if command.kind == "web_search":
             query = quote_plus(command.value)
@@ -405,12 +418,17 @@ class CypherExecutor:
         raise ValueError(f"Unsupported Cypher command kind: {command.kind}")
 
     def _open_app(self, target: str) -> None:
+        if is_sensitive_app_target(target):
+            raise PermissionError(f"Cypher refused sensitive app target: {target}")
+
         spec = _APP_ALIASES.get(target)
         if spec is not None and self._try_open_spec(spec):
             return
 
         resolved = self._app_resolver.resolve(target)
         if resolved is not None:
+            if is_sensitive_app_target(resolved.label) or is_sensitive_app_target(resolved.launch_target):
+                raise PermissionError(f"Cypher refused sensitive app target: {target}")
             self._launch_resolved(resolved)
             return
 
@@ -570,7 +588,7 @@ def _parse_telegram_screenshot_target(body: str) -> str | None:
 def _resolve_url_target(target: str, site_alias: str | None) -> str | None:
     if site_alias is not None:
         return _SITE_ALIASES[site_alias]
-    return _normalize_url(target)
+    return normalize_open_url(target)
 
 
 def _normalize_url(value: str) -> str | None:
@@ -588,6 +606,30 @@ def _normalize_url(value: str) -> str | None:
             return token
         return f"https://{token}"
     return None
+
+
+def normalize_open_url(value: str) -> str | None:
+    candidate = value.strip()
+    if "://" in candidate:
+        raw_scheme = candidate.split(":", 1)[0].casefold()
+        if raw_scheme not in {"http", "https"}:
+            return None
+
+    url = _normalize_url(value)
+    if url is None:
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if not parsed.netloc:
+        return None
+    return url
+
+
+def is_sensitive_app_target(value: str) -> bool:
+    normalized = _normalize_phrase(value).casefold()
+    normalized = normalized.replace(".exe", "")
+    return any(marker in normalized for marker in _SENSITIVE_APP_MARKERS)
 
 
 def _format_telegram_messages(chat_name: str, messages: list[str]) -> str:

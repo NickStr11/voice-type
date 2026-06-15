@@ -19,7 +19,7 @@ from google import genai
 from google.genai import types
 from loguru import logger
 
-from voice_type.cypher import CommandKind, CypherCommand
+from voice_type.cypher import CommandKind, CypherCommand, is_sensitive_app_target, normalize_open_url
 
 _MODEL_DEFAULT: Final[str] = "gemini-2.5-flash"
 _TIMEOUT_S: Final[float] = 4.0
@@ -230,6 +230,15 @@ def command_from_planner_json(raw_text: str) -> CypherCommand | None:
         )
 
     if not value:
+        return None
+
+    if kind == "open_url":
+        url = normalize_open_url(value)
+        if url is None:
+            return None
+        return CypherCommand(kind="open_url", value=url, spoken_target=url)
+
+    if kind == "open_app" and is_sensitive_app_target(value):
         return None
 
     allowed_kind = cast(CommandKind, kind)

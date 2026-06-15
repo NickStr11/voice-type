@@ -76,6 +76,8 @@ class AppController:
         # Pipeline components -- initialized once, reused per recording
         self._stt = STTClient(config) if config.gcp_credentials_path is not None else None
         self._stt_whisper = WhisperSTTClient(config)
+        self._cloud_fallback_enabled = config.cloud_fallback
+        self._log_transcripts = config.log_transcripts
         self._llm = LLMClient(project=config.gcp_project_id)
         self._paste = PasteService()
         self._llm_local = LocalLLMClient()
@@ -100,11 +102,8 @@ class AppController:
         """Select cleanup mode for the current utterance.
 
         Short utterances → instant regex (fast_clean), never worth a network
-        round-trip. Long dictation → Gemini ("full"), which runs on Vertex (the
-        $1000 credit) and gives real paragraph/list structure while keeping the
-        user's words. fast_clean is the in-executor fallback if Gemini fails.
-        The local qwen path was benchmarked and dropped (1.5b paraphrased the
-        text; 3b was faithful but cost ~4s).
+        round-trip. Long dictation → Gemini ("full") when credentials are
+        configured. fast_clean is the in-executor fallback if Gemini fails.
         """
         if self.mode != "auto":
             return self.mode
@@ -260,7 +259,8 @@ class AppController:
                 logger.info(f"Local cleanup [{t_llm - t_stt:.2f}s]")
 
             # Paste into saved window
-            logger.debug(f"CLEANED text ({cleanup_mode}): {clean_text!r}")
+            if self._log_transcripts:
+                logger.debug(f"CLEANED text ({cleanup_mode}): {clean_text!r}")
             await asyncio.to_thread(self._paste.paste, clean_text, self._target_hwnd)
             t_end = _time.perf_counter()
             logger.info(
@@ -283,15 +283,15 @@ class AppController:
         Local mode is whisper-only: local, free, offline. We no longer race
         Cloud Chirp on every utterance — that billed GCP on each dictation and
         was the source of mid-word splits ("пол ная") from joining Chirp result
-        fragments. Cloud STT stays only as a fallback when whisper returns
-        nothing (rare), so a transient whisper failure still produces text.
+        fragments. Cloud STT stays only as an explicit opt-in fallback when
+        whisper returns nothing (rare), so local-first privacy is the default.
 
         Cloud mode (stt_provider='cloud') uses Chirp directly; raises
         RuntimeError if selected without GCP credentials.
         """
         if self.stt_provider == "local":
             local_text = await self._stt_whisper.recognize(audio_bytes)
-            if not local_text and self._stt is not None:
+            if not local_text and self._cloud_fallback_enabled and self._stt is not None:
                 logger.warning("Local STT empty -- falling back to cloud once")
                 return await self._stt.recognize(audio_bytes)
             return local_text

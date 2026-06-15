@@ -141,6 +141,13 @@ def test_parse_cypher_command_rejects_unknown_prefixed_command() -> None:
     assert parse_cypher_command("Сайфер, удали все файлы") is None
 
 
+@pytest.mark.parametrize("target", ["powershell", "terminal", "cmd", "registry editor"])
+def test_executor_rejects_sensitive_app_targets(target: str) -> None:
+    command = CypherCommand(kind="open_app", value=target, spoken_target=target)
+    with pytest.raises(PermissionError, match="refused"):
+        CypherExecutor().execute(command)
+
+
 def test_parse_cypher_command_refresh_apps() -> None:
     assert parse_cypher_command("Сайфер, обнови список приложений") == CypherCommand(
         kind="refresh_apps",

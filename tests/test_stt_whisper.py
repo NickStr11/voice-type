@@ -70,6 +70,19 @@ async def test_recognize_uses_server_when_available(config: AppConfig, _mock_pat
     mock_cli.assert_not_called()
 
 
+async def test_recognize_does_not_log_raw_transcript_by_default(config: AppConfig) -> None:
+    with (
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
+        patch.object(WhisperSTTClient, "_transcribe_sync", return_value="private transcript"),
+        patch("voice_type.stt_whisper.logger.debug") as mock_debug,
+    ):
+        client = WhisperSTTClient(config)
+        result = await client.recognize(b"\x00\x00" * 16000)
+
+    assert result == "private transcript"
+    assert not any("Whisper RAW text" in str(call.args[0]) for call in mock_debug.call_args_list)
+
+
 async def test_server_failure_restarts_once_then_succeeds(config: AppConfig, _mock_paths: tuple[Path, Path]) -> None:
     cli, model = _mock_paths
     with (

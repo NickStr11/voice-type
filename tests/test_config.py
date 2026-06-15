@@ -26,12 +26,42 @@ def minimal_gcp_env(tmp_path: Path) -> dict[str, str]:
     }
 
 
-def test_default_stt_provider_is_cloud(minimal_gcp_env: dict[str, str]) -> None:
-    """Default stt_provider should be 'cloud' for backward compatibility."""
+def test_default_stt_provider_is_local() -> None:
+    """VoiceType is local-first by default: audio must not require GCP."""
+    with patch("voice_type.config.load_dotenv", _no_dotenv), \
+         patch.dict(os.environ, {}, clear=True):
+        config = load_config()
+    assert config.stt_provider == "local"
+
+
+def test_cloud_fallback_default_is_disabled(minimal_gcp_env: dict[str, str]) -> None:
+    """Cloud audio fallback is explicit opt-in, even when GCP creds exist."""
     with patch("voice_type.config.load_dotenv", _no_dotenv), \
          patch.dict(os.environ, minimal_gcp_env, clear=True):
         config = load_config()
-    assert config.stt_provider == "cloud"
+    assert config.cloud_fallback is False
+
+
+def test_cloud_fallback_from_env(minimal_gcp_env: dict[str, str]) -> None:
+    env = {**minimal_gcp_env, "VOICETYPE_CLOUD_FALLBACK": "1"}
+    with patch("voice_type.config.load_dotenv", _no_dotenv), \
+         patch.dict(os.environ, env, clear=True):
+        config = load_config()
+    assert config.cloud_fallback is True
+
+
+def test_log_transcripts_default_is_disabled() -> None:
+    with patch("voice_type.config.load_dotenv", _no_dotenv), \
+         patch.dict(os.environ, {}, clear=True):
+        config = load_config()
+    assert config.log_transcripts is False
+
+
+def test_log_transcripts_from_env() -> None:
+    with patch("voice_type.config.load_dotenv", _no_dotenv), \
+         patch.dict(os.environ, {"VOICETYPE_LOG_TRANSCRIPTS": "true"}, clear=True):
+        config = load_config()
+    assert config.log_transcripts is True
 
 
 def test_stt_provider_local_from_env() -> None:
@@ -74,6 +104,14 @@ def test_local_provider_no_gcp_credentials_succeeds() -> None:
 def test_cloud_provider_no_gcp_credentials_fails() -> None:
     """When stt_provider=cloud (default), missing GCP credentials → SystemExit."""
     env = {"VOICETYPE_STT_PROVIDER": "cloud"}
+    with patch("voice_type.config.load_dotenv", _no_dotenv), \
+         patch.dict(os.environ, env, clear=True):
+        with pytest.raises(SystemExit):
+            load_config()
+
+
+def test_cloud_fallback_without_gcp_credentials_fails() -> None:
+    env = {"VOICETYPE_CLOUD_FALLBACK": "1"}
     with patch("voice_type.config.load_dotenv", _no_dotenv), \
          patch.dict(os.environ, env, clear=True):
         with pytest.raises(SystemExit):
