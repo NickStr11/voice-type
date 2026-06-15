@@ -5,6 +5,7 @@ import concurrent.futures
 from unittest.mock import MagicMock, patch
 
 import pytest
+from google.genai import errors as genai_errors
 
 from voice_type.cleanup import fast_clean
 from voice_type.llm import LLMClient
@@ -48,6 +49,38 @@ def test_clean_exception_falls_back_to_fast_clean() -> None:
         client = LLMClient()
         result = client.clean("some text")
         assert result == fast_clean("some text")
+
+
+def test_repeated_rate_limit_enters_cooldown_and_skips_gemini() -> None:
+    """Two consecutive 429s disable Gemini temporarily so dictation stays fast."""
+    rate_limited = genai_errors.ClientError(
+        429,
+        {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "quota exceeded"}},
+    )
+    with patch("voice_type.llm.genai.Client") as mock_cls:
+        generate_content = mock_cls.return_value.models.generate_content
+        generate_content.side_effect = [rate_limited, rate_limited, AssertionError("Gemini should be skipped")]
+
+        client = LLMClient()
+
+        assert client.clean("first quota hit") == fast_clean("first quota hit")
+        assert client.clean("second quota hit") == fast_clean("second quota hit")
+        assert client.clean("third should skip") == fast_clean("third should skip")
+        assert generate_content.call_count == 2
+
+
+def test_repeated_timeouts_enter_cooldown_and_skip_gemini() -> None:
+    """Two consecutive wall-clock timeouts disable Gemini temporarily."""
+    with patch("voice_type.llm.genai.Client"):
+        client = LLMClient()
+
+        with patch.object(concurrent.futures.Future, "result") as mock_result:
+            mock_result.side_effect = concurrent.futures.TimeoutError()
+
+            assert client.clean("first timeout") == fast_clean("first timeout")
+            assert client.clean("second timeout") == fast_clean("second timeout")
+            assert client.clean("third should skip") == fast_clean("third should skip")
+            assert mock_result.call_count == 2
 
 
 def test_clean_empty_string_returns_empty() -> None:

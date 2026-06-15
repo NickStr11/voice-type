@@ -15,6 +15,7 @@ Design decisions:
 from __future__ import annotations
 
 import concurrent.futures
+import time
 from typing import Final
 
 from google import genai
@@ -39,6 +40,8 @@ _CLEANUP_PROMPT_TEMPLATE: Final[str] = (
 )
 _MODEL: Final[str] = "gemini-2.5-flash"
 _TIMEOUT_S: Final[float] = 8.0
+_COOLDOWN_FAILURE_THRESHOLD: Final[int] = 2
+_COOLDOWN_S: Final[float] = 10 * 60.0
 
 
 class LLMClient:
@@ -70,6 +73,8 @@ class LLMClient:
             self.available = False
             backend = "disabled (set GEMINI_API_KEY to enable Gemini cleanup)"
 
+        self._consecutive_cooldown_failures = 0
+        self._cooldown_until = 0.0
         logger.info(f"LLMClient {backend} — model: {_MODEL}, timeout: {_TIMEOUT_S}s")
 
     def clean(self, raw_text: str) -> str:
@@ -87,6 +92,13 @@ class LLMClient:
         if not raw_text.strip():
             return raw_text
         if self._client is None:
+            return fast_clean(raw_text)
+        cooldown_remaining_s = self._cooldown_remaining_s()
+        if cooldown_remaining_s > 0:
+            logger.warning(
+                f"LLM cleanup skipped — Gemini cooldown has {cooldown_remaining_s:.0f}s remaining; "
+                "falling back to regex fast_clean"
+            )
             return fast_clean(raw_text)
 
         client = self._client
@@ -106,18 +118,64 @@ class LLMClient:
                 return fast_clean(raw_text)
             return result.strip()
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_sync_call)
-            try:
-                cleaned = future.result(timeout=_TIMEOUT_S)
-                logger.info(f"LLM cleanup complete — chars: {len(raw_text)} -> {len(cleaned)}")
-                return cleaned
-            except concurrent.futures.TimeoutError:
-                logger.warning(
-                    f"LLMClient.clean() timed out after {_TIMEOUT_S}s — "
-                    "falling back to regex fast_clean"
-                )
-                return fast_clean(raw_text)
-            except Exception as exc:
-                logger.warning(f"LLMClient.clean() error: {exc} — falling back to regex fast_clean")
-                return fast_clean(raw_text)
+        # NOTE: do NOT use `with ThreadPoolExecutor(...)` here. Exiting a `with`
+        # block calls executor.shutdown(wait=True), which re-blocks on the still-
+        # running _sync_call thread (e.g. Gemini retrying a 429, or the genai
+        # socket-stall bug) — that negates the wall-clock timeout and the whole
+        # pipeline stalls ~40s despite "timed out after 8.0s" in the log. We
+        # shut down with wait=False so the orphan thread finishes in the
+        # background and the user gets fast_clean immediately.
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_sync_call)
+        try:
+            cleaned = future.result(timeout=_TIMEOUT_S)
+            self._reset_cooldown_failures()
+            logger.info(f"LLM cleanup complete — chars: {len(raw_text)} -> {len(cleaned)}")
+            return cleaned
+        except concurrent.futures.TimeoutError:
+            self._record_cooldown_failure("timeout")
+            logger.warning(
+                f"LLMClient.clean() timed out after {_TIMEOUT_S}s — "
+                "falling back to regex fast_clean"
+            )
+            return fast_clean(raw_text)
+        except Exception as exc:
+            if _is_rate_limit_error(exc):
+                self._record_cooldown_failure("rate-limit")
+            else:
+                self._reset_cooldown_failures()
+            logger.warning(f"LLMClient.clean() error: {exc} — falling back to regex fast_clean")
+            return fast_clean(raw_text)
+        finally:
+            executor.shutdown(wait=False)
+
+    def _cooldown_remaining_s(self) -> float:
+        return max(0.0, self._cooldown_until - time.monotonic())
+
+    def _record_cooldown_failure(self, reason: str) -> None:
+        self._consecutive_cooldown_failures += 1
+        if self._consecutive_cooldown_failures < _COOLDOWN_FAILURE_THRESHOLD:
+            return
+
+        self._cooldown_until = time.monotonic() + _COOLDOWN_S
+        self._consecutive_cooldown_failures = 0
+        logger.warning(
+            f"Gemini cleanup disabled for {_COOLDOWN_S / 60:.0f} min after "
+            f"{_COOLDOWN_FAILURE_THRESHOLD} consecutive {reason} failures"
+        )
+
+    def _reset_cooldown_failures(self) -> None:
+        self._consecutive_cooldown_failures = 0
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    code = getattr(exc, "code", None)
+    if code == 429:
+        return True
+
+    status_value = getattr(exc, "status", None)
+    if isinstance(status_value, str) and status_value.upper() == "RESOURCE_EXHAUSTED":
+        return True
+
+    message = str(exc).upper()
+    return "429" in message and ("RESOURCE_EXHAUSTED" in message or "QUOTA" in message or "RATE LIMIT" in message)
