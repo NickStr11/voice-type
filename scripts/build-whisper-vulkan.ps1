@@ -21,7 +21,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$WhisperTag    = "v1.8.6",
+    [string]$WhisperTag    = "v1.9.1",
     [string]$W64DevkitVer  = "2.8.0",
     [switch]$SkipBackup
 )
@@ -83,7 +83,15 @@ if (-not (Test-Path $src)) {
     Info "Cloning whisper.cpp $WhisperTag ..."
     git clone --depth 1 --branch $WhisperTag https://github.com/ggml-org/whisper.cpp.git $src
 } else {
-    Info "Reusing existing whisper.cpp checkout at $src (delete to force a fresh clone)."
+    $currentTag = git -C $src describe --tags --exact-match 2>$null
+    if ($currentTag -ne $WhisperTag) {
+        Info "Updating whisper.cpp checkout from $currentTag to $WhisperTag ..."
+        git -C $src fetch --depth 1 origin "tag" $WhisperTag
+        git -C $src checkout --detach $WhisperTag
+        if ($LASTEXITCODE -ne 0) { throw "Failed to checkout whisper.cpp $WhisperTag." }
+    } else {
+        Info "Reusing whisper.cpp $currentTag checkout at $src."
+    }
 }
 
 # --- configure + build ------------------------------------------------------
