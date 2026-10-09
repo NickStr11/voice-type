@@ -11,7 +11,7 @@ Fallback path:
 - If GPU fails, final fallback is CPU (--no-gpu).
 
 Notes:
-- Current runtime build is whisper.cpp v1.8.6 (Vulkan, MinGW); server no_context
+- Current runtime build is whisper.cpp v1.9.1 (Vulkan, MinGW); server no_context
   is already on by default, so there is no -nc CLI flag here.
 - GGML_NO_BACKTRACE=1 is required for the MinGW build on this machine.
 - _VULKAN_ENV is injected into both server and CLI subprocesses to survive an
@@ -47,15 +47,56 @@ _SERVER_HOST = "127.0.0.1"
 _SERVER_PORT = 8178
 _SERVER_URL = f"http://{_SERVER_HOST}:{_SERVER_PORT}"
 _SERVER_TIMEOUT_S = 60.0
-_SERVER_READY_TIMEOUT_S = 25.0
+# Cold model uploads can exceed 25s after boot even when Vulkan is healthy.
+# Give startup enough headroom instead of killing it just before it is ready.
+_SERVER_READY_TIMEOUT_S = 60.0
+
+_TEMP_AUDIO_PREFIXES = ("audio_", "server_audio_")
+_TEMP_OUTPUT_SUFFIXES = (".wav", ".json", ".txt", ".srt", ".vtt", ".csv", ".lrc")
 
 # Wall-clock gap watcher: if more than _RESUME_POLL_S + _RESUME_GAP_S of real
 # time elapses between ticks, the machine was suspended (sleep/hibernate). The
 # whisper-server's Vulkan device is invalidated across resume (first /inference
-# then 500s — see docs/learned-the-hard-way.md §4), so we proactively restart
-# the server to rebuild the GPU context before the next recording.
+# then 500s — see docs/learned-the-hard-way.md §4). Keep it out of ordinary
+# sleep transitions by stopping it after idle, and discard it after a resume gap.
 _RESUME_POLL_S = 30.0
 _RESUME_GAP_S = 90.0
+
+
+def cleanup_stale_temp_files(directory: Path | None = None) -> int:
+    """Remove audio/transcript artifacts left behind by a crashed worker."""
+    target = directory or _WHISPER_DIR
+    if not target.exists():
+        return 0
+
+    removed = 0
+    for path in target.iterdir():
+        if (
+            not path.is_file()
+            or not path.name.startswith(_TEMP_AUDIO_PREFIXES)
+            or path.suffix.lower() not in _TEMP_OUTPUT_SUFFIXES
+        ):
+            continue
+        try:
+            path.unlink(missing_ok=True)
+            removed += 1
+        except OSError as exc:
+            logger.warning(f"Could not remove stale VoiceType temp file {path.name}: {exc}")
+
+    if removed:
+        logger.info(f"Removed {removed} stale VoiceType temp file(s)")
+    return removed
+
+
+def _cleanup_cli_outputs(out_base: str) -> None:
+    """Remove every output format whisper-cli may leave next to its input."""
+    for suffix in _TEMP_OUTPUT_SUFFIXES:
+        if suffix == ".wav":
+            continue
+        try:
+            Path(f"{out_base}{suffix}").unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning(f"Could not remove whisper-cli temp output {out_base}{suffix}: {exc}")
 
 # Vulkan workarounds for AMD RX 7800 XT after a driver update (2026-06-08):
 # - VK_LOADER_LAYERS_DISABLE=~implicit~ — overlay/capture implicit layers
@@ -221,6 +262,7 @@ class WhisperSTTClient:
         process = self._server_process
         self._server_process = None
         self._server_available = False
+        self._server_managed = False
 
         if process is not None:
             try:
@@ -272,7 +314,7 @@ class WhisperSTTClient:
         self._resume_watch_thread.start()
 
     def _resume_watch_loop(self) -> None:
-        """Detect resume-from-sleep via a wall-clock gap and rebuild the server."""
+        """Detect resume-from-sleep and rebuild the Vulkan server context."""
         last = time.time()
         while not self._stop_watch.is_set():
             self._stop_watch.wait(_RESUME_POLL_S)
@@ -283,16 +325,22 @@ class WhisperSTTClient:
             last = now
             if gap > _RESUME_POLL_S + _RESUME_GAP_S:
                 logger.info(
-                    "Detected %.0fs wall-clock gap (system resume) — proactively "
-                    "restarting whisper-server to rebuild Vulkan context",
-                    gap,
+                    f"Detected {gap:.0f}s wall-clock gap (system resume) — restarting "
+                    "whisper-server to rebuild the Vulkan context"
                 )
                 try:
                     self._restart_server_sync()
                 except Exception as exc:  # noqa: BLE001 — watcher must never die
-                    logger.warning("Resume restart failed: %s", exc)
+                    logger.warning(f"Resume restart failed: {exc}")
 
-    def _run_server(self, audio_bytes: bytes) -> str:
+    def _run_server(self, audio_bytes: bytes) -> str | None:
+        """Transcribe via the resident server.
+
+        Returns the text — possibly "" for silence or a too-quiet clip — or None
+        when the request itself failed. Only None means the server is unhealthy;
+        treating an empty transcript as a failure used to restart the server
+        (~20s model reload) and then run the slow CLI chain on silent clips.
+        """
         wav_path = _WHISPER_DIR / f"server_audio_{uuid.uuid4().hex[:8]}.wav"
         try:
             with wave.open(str(wav_path), "wb") as wav_file:
@@ -315,12 +363,15 @@ class WhisperSTTClient:
                 payload = response.read()
             elapsed = time.perf_counter() - t0
             data = json.loads(payload.decode("utf-8", errors="replace"))
+            if "error" in data and "text" not in data:
+                logger.warning(f"whisper-server returned error: {str(data['error'])[:160]}")
+                return None
             text = str(data.get("text", "")).strip()
             logger.info(f"whisper-server done in {elapsed:.2f}s")
             return text
         except Exception as exc:
             logger.warning(f"whisper-server request failed: {exc}")
-            return ""
+            return None
         finally:
             try:
                 wav_path.unlink()
@@ -393,44 +444,44 @@ class WhisperSTTClient:
         env = {**os.environ, "GGML_NO_BACKTRACE": "1", **_VULKAN_ENV}
         t0 = time.perf_counter()
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=60,
-                env=env,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-            )
-        except subprocess.TimeoutExpired:
-            elapsed = time.perf_counter() - t0
-            gpu_label = "GPU" if use_gpu else "CPU"
-            logger.error(f"whisper-cli {gpu_label} timed out after {elapsed:.1f}s")
-            return ""
-        except OSError as exc:
-            logger.error(f"whisper-cli failed to start: {exc}")
-            return ""
-        elapsed = time.perf_counter() - t0
-
-        if result.returncode != 0:
-            gpu_label = "GPU" if use_gpu else "CPU"
-            logger.error(f"whisper-cli {gpu_label} failed (code {result.returncode}, {elapsed:.1f}s)")
-            return ""
-
-        logger.info(f"whisper-cli {'GPU' if use_gpu else 'CPU'} done in {elapsed:.2f}s")
-
-        json_path = Path(f"{out_base}.json")
-        if json_path.exists():
             try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    env=env,
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                )
+            except subprocess.TimeoutExpired:
+                elapsed = time.perf_counter() - t0
+                gpu_label = "GPU" if use_gpu else "CPU"
+                logger.error(f"whisper-cli {gpu_label} timed out after {elapsed:.1f}s")
+                return ""
+            except OSError as exc:
+                logger.error(f"whisper-cli failed to start: {exc}")
+                return ""
+            elapsed = time.perf_counter() - t0
+
+            if result.returncode != 0:
+                gpu_label = "GPU" if use_gpu else "CPU"
+                logger.error(f"whisper-cli {gpu_label} failed (code {result.returncode}, {elapsed:.1f}s)")
+                return ""
+
+            logger.info(f"whisper-cli {'GPU' if use_gpu else 'CPU'} done in {elapsed:.2f}s")
+
+            json_path = Path(f"{out_base}.json")
+            if json_path.exists():
                 data = json.loads(json_path.read_text(encoding="utf-8"))
                 return " ".join(seg.get("text", "").strip() for seg in data.get("transcription", [])).strip()
-            finally:
-                json_path.unlink(missing_ok=True)
-        return ""
+            return ""
+        finally:
+            _cleanup_cli_outputs(out_base)
 
     def _note_gpu_alive(self) -> None:
         """GPU/Vulkan path produced a result — clear any CPU-fallback streak."""
         if self._cpu_fallback_streak:
-            logger.info("GPU STT path recovered after %d CPU fallback(s)", self._cpu_fallback_streak)
+            logger.info(f"GPU STT path recovered after {self._cpu_fallback_streak} CPU fallback(s)")
             self._cpu_fallback_streak = 0
 
     def _note_cpu_fallback(self) -> None:
@@ -442,15 +493,16 @@ class WhisperSTTClient:
                 "Likely an AMD driver update broke Vulkan; see docs/learned-the-hard-way.md §3."
             )
         else:
-            logger.debug("STT still on CPU (streak=%d)", self._cpu_fallback_streak)
+            logger.debug(f"STT still on CPU (streak={self._cpu_fallback_streak})")
 
     def _transcribe_sync(self, audio_bytes: bytes) -> str:
+        self._ensure_server_background()
         if self._server_thread is not None:
             self._server_ready.wait(timeout=_SERVER_READY_TIMEOUT_S)
 
         if self._server_available and self._server_healthcheck():
             text = self._run_server(audio_bytes)
-            if text:
+            if text is not None:
                 self._note_gpu_alive()
                 return text
 
@@ -458,7 +510,7 @@ class WhisperSTTClient:
             self._restart_server_sync()
             if self._server_available and self._server_healthcheck():
                 text = self._run_server(audio_bytes)
-                if text:
+                if text is not None:
                     self._note_gpu_alive()
                     return text
 

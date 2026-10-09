@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from voice_type.config import AppConfig
-from voice_type.stt_whisper import WhisperSTTClient, _rejoin_wrapped_words
+from voice_type.stt_whisper import WhisperSTTClient, _rejoin_wrapped_words, cleanup_stale_temp_files
 
 
 @pytest.fixture()
@@ -40,6 +40,22 @@ def _mock_paths(tmp_path: Path) -> tuple[Path, Path]:
 def _make_json_output(out_base: str, text: str) -> None:
     data = {"transcription": [{"text": text}]}
     Path(f"{out_base}.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_cleanup_stale_temp_files_removes_only_voice_type_artifacts(tmp_path: Path) -> None:
+    stale_files = [
+        tmp_path / "audio_deadbeef.wav",
+        tmp_path / "audio_deadbeef.json",
+        tmp_path / "server_audio_cafebabe.wav",
+    ]
+    for path in stale_files:
+        path.write_bytes(b"temporary")
+    unrelated = tmp_path / "test_voice.wav"
+    unrelated.write_bytes(b"keep")
+
+    assert cleanup_stale_temp_files(tmp_path) == 3
+    assert all(not path.exists() for path in stale_files)
+    assert unrelated.exists()
 
 
 async def test_recognize_empty_returns_empty(config: AppConfig) -> None:
@@ -91,7 +107,7 @@ async def test_server_failure_restarts_once_then_succeeds(config: AppConfig, _mo
         patch("voice_type.stt_whisper._MODEL_DIR", model.parent),
         patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
         patch.object(WhisperSTTClient, "_server_healthcheck", return_value=True),
-        patch.object(WhisperSTTClient, "_run_server", side_effect=["", "server after restart"]) as mock_server,
+        patch.object(WhisperSTTClient, "_run_server", side_effect=[None, "server after restart"]) as mock_server,
         patch.object(WhisperSTTClient, "_restart_server_sync", autospec=True) as mock_restart,
     ):
         client = WhisperSTTClient(config)
@@ -102,6 +118,58 @@ async def test_server_failure_restarts_once_then_succeeds(config: AppConfig, _mo
     assert result == "server after restart"
     assert mock_server.call_count == 2
     mock_restart.assert_called_once_with(client)
+
+
+async def test_empty_server_transcript_is_not_a_failure(config: AppConfig, _mock_paths: tuple[Path, Path]) -> None:
+    """Silence or a too-quiet clip must not trigger a ~20s server restart + CLI chain."""
+    cli, model = _mock_paths
+    with (
+        patch("voice_type.stt_whisper._CLI_EXE", cli),
+        patch("voice_type.stt_whisper._SERVER_EXE", cli.with_name("whisper-server.exe")),
+        patch("voice_type.stt_whisper._MODEL_DIR", model.parent),
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
+        patch.object(WhisperSTTClient, "_server_healthcheck", return_value=True),
+        patch.object(WhisperSTTClient, "_run_server", return_value="") as mock_server,
+        patch.object(WhisperSTTClient, "_restart_server_sync", autospec=True) as mock_restart,
+        patch.object(WhisperSTTClient, "_run_cli", return_value="cli text") as mock_cli,
+    ):
+        client = WhisperSTTClient(config)
+        client._server_available = True
+        client._server_ready.set()
+        result = await client.recognize(b"\x00\x00" * 16000)
+
+    assert result == ""
+    mock_server.assert_called_once()
+    mock_restart.assert_not_called()
+    mock_cli.assert_not_called()
+
+
+def test_run_server_distinguishes_failure_from_empty_text(config: AppConfig, tmp_path: Path) -> None:
+    class _Response:
+        def __init__(self, payload: bytes) -> None:
+            self._payload = payload
+
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return self._payload
+
+    with (
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
+        patch("voice_type.stt_whisper._WHISPER_DIR", tmp_path),
+    ):
+        client = WhisperSTTClient(config)
+        audio = b"\x00\x00" * 1600
+        with patch("voice_type.stt_whisper.request.urlopen", return_value=_Response(b'{"text": "  "}')):
+            assert client._run_server(audio) == ""
+        with patch("voice_type.stt_whisper.request.urlopen", return_value=_Response(b'{"error": "failed"}')):
+            assert client._run_server(audio) is None
+        with patch("voice_type.stt_whisper.request.urlopen", side_effect=OSError("connection refused")):
+            assert client._run_server(audio) is None
 
 
 async def test_server_failure_falls_back_to_cli(
@@ -123,7 +191,7 @@ async def test_server_failure_falls_back_to_cli(
         patch("voice_type.stt_whisper._WHISPER_DIR", tmp_path),
         patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
         patch.object(WhisperSTTClient, "_server_healthcheck", return_value=False),
-        patch.object(WhisperSTTClient, "_run_server", return_value=""),
+        patch.object(WhisperSTTClient, "_run_server", return_value=None),
         patch.object(WhisperSTTClient, "_restart_server_sync", autospec=True),
         patch("subprocess.run", side_effect=fake_run),
     ):
@@ -198,6 +266,30 @@ def test_cli_subprocess_gets_vulkan_env(
     assert env["GGML_VK_DISABLE_COOPMAT"] == "1"
 
 
+def test_cli_failure_removes_partial_output(
+    config: AppConfig, _mock_paths: tuple[Path, Path], tmp_path: Path
+) -> None:
+    cli, model = _mock_paths
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        of_idx = cmd.index("-of") + 1
+        _make_json_output(cmd[of_idx], "partial")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="failed")
+
+    with (
+        patch("voice_type.stt_whisper._CLI_EXE", cli),
+        patch("voice_type.stt_whisper._MODEL_DIR", model.parent),
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
+        patch("subprocess.run", side_effect=fake_run),
+    ):
+        client = WhisperSTTClient(config)
+        wav = tmp_path / "audio_deadbeef.wav"
+        wav.write_bytes(b"")
+        assert client._run_cli(str(wav), use_gpu=True) == ""
+
+    assert not (tmp_path / "audio_deadbeef.json").exists()
+
+
 def test_server_subprocess_gets_vulkan_env(
     config: AppConfig, _mock_paths: tuple[Path, Path], tmp_path: Path
 ) -> None:
@@ -225,8 +317,55 @@ def test_server_subprocess_gets_vulkan_env(
     assert env["GGML_VK_DISABLE_COOPMAT"] == "1"
 
 
-def test_resume_watch_restarts_on_sleep_gap(config: AppConfig) -> None:
-    """A large wall-clock gap (system resume) triggers a proactive server restart."""
+def test_client_starts_server_warmup_at_initialization(
+    config: AppConfig, _mock_paths: tuple[Path, Path]
+) -> None:
+    cli, model = _mock_paths
+    with (
+        patch("voice_type.stt_whisper._SERVER_EXE", cli.with_name("whisper-server.exe")),
+        patch("voice_type.stt_whisper._MODEL_DIR", model.parent),
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True) as mock_ensure,
+        patch.object(WhisperSTTClient, "_start_resume_watch", autospec=True),
+    ):
+        client = WhisperSTTClient(config)
+
+    mock_ensure.assert_called_once_with(client)
+
+
+def test_server_can_finish_cold_start_after_25_seconds(
+    config: AppConfig, _mock_paths: tuple[Path, Path]
+) -> None:
+    cli, model = _mock_paths
+    elapsed = 0.0
+
+    def advance_time(seconds: float) -> None:
+        nonlocal elapsed
+        elapsed += seconds
+
+    process = MagicMock()
+    process.poll.return_value = None
+    with (
+        patch("voice_type.stt_whisper._SERVER_EXE", cli.with_name("whisper-server.exe")),
+        patch("voice_type.stt_whisper._MODEL_DIR", model.parent),
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
+        patch.object(WhisperSTTClient, "_start_resume_watch", autospec=True),
+        patch.object(WhisperSTTClient, "_launch_server_process", return_value=process),
+        patch.object(WhisperSTTClient, "_server_healthcheck", side_effect=lambda: elapsed >= 32.0),
+        patch("voice_type.stt_whisper.time.perf_counter", side_effect=lambda: elapsed),
+        patch("voice_type.stt_whisper.time.sleep", side_effect=advance_time),
+    ):
+        client = WhisperSTTClient(config)
+        client._start_server_worker()
+
+    assert elapsed == 32.0
+    assert client._server_available
+    assert client._server_ready.is_set()
+    assert client._server_start_error is None
+    process.terminate.assert_not_called()
+
+
+def test_resume_watch_restarts_server_on_sleep_gap(config: AppConfig) -> None:
+    """After resume, replace any Vulkan context that crossed the power transition."""
     with patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True):
         client = WhisperSTTClient(config)
     # is_set(): enter loop, post-wait check, then exit on the next loop top.
@@ -238,7 +377,7 @@ def test_resume_watch_restarts_on_sleep_gap(config: AppConfig) -> None:
         patch.object(client, "_restart_server_sync") as mock_restart,
     ):
         client._resume_watch_loop()
-    mock_restart.assert_called_once()
+    mock_restart.assert_called_once_with()
 
 
 def test_resume_watch_ignores_normal_interval(config: AppConfig) -> None:
@@ -254,6 +393,25 @@ def test_resume_watch_ignores_normal_interval(config: AppConfig) -> None:
     ):
         client._resume_watch_loop()
     mock_restart.assert_not_called()
+
+
+def test_transcribe_lazily_starts_server(config: AppConfig, _mock_paths: tuple[Path, Path]) -> None:
+    cli, model = _mock_paths
+    with (
+        patch("voice_type.stt_whisper._CLI_EXE", cli),
+        patch("voice_type.stt_whisper._SERVER_EXE", cli.with_name("whisper-server.exe")),
+        patch("voice_type.stt_whisper._MODEL_DIR", model.parent),
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True) as mock_ensure,
+        patch.object(WhisperSTTClient, "_server_healthcheck", return_value=True),
+        patch.object(WhisperSTTClient, "_run_server", return_value="server text"),
+    ):
+        client = WhisperSTTClient(config)
+        mock_ensure.reset_mock()
+        client._server_available = True
+        client._server_ready.set()
+        client._transcribe_sync(b"\x00\x00" * 16000)
+
+    mock_ensure.assert_called_with(client)
 
 
 def test_missing_binary_raises(config: AppConfig) -> None:
