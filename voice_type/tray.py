@@ -62,6 +62,9 @@ class TrayIcon:
         on_set_mode: Callable[[str], None] | None = None,
         on_set_stt_provider: Callable[[str], None] | None = None,
         initial_stt_provider: str = "cloud",
+        on_cancel: Callable[[], None] | None = None,
+        on_copy_last: Callable[[], None] | None = None,
+        on_repaste_last: Callable[[], None] | None = None,
     ) -> None:
         # Pre-generate all state icons at startup
         self._icons: dict[State, Image.Image] = {
@@ -70,6 +73,16 @@ class TrayIcon:
         }
         self._current_mode = "auto"
         self._current_stt_provider = initial_stt_provider
+        self._status = "Готов к записи"
+
+        def _status_label(_: object) -> str:
+            return self._status
+
+        def _action(callback: Callable[[], None] | None) -> Callable[[object], None]:
+            def handler(_: object) -> None:
+                if callback is not None:
+                    callback()
+            return handler
 
         def _set_mode(mode: str) -> Callable[[object], None]:
             def handler(_: object) -> None:
@@ -120,6 +133,11 @@ class TrayIcon:
         )
 
         menu = pystray.Menu(
+            pystray.MenuItem(_status_label, None, enabled=False),
+            pystray.MenuItem("Отменить обработку", _action(on_cancel)),
+            pystray.MenuItem("Скопировать последний текст", _action(on_copy_last)),
+            pystray.MenuItem("Повторить вставку в прежнее окно", _action(on_repaste_last)),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem("Auto", _set_mode("auto"), checked=_is_mode("auto")),
             pystray.MenuItem("Fast (regex)", _set_mode("fast"), checked=_is_mode("fast")),
             pystray.MenuItem("Local (Ollama)", _set_mode("local"), checked=_is_mode("local")),
@@ -159,3 +177,16 @@ class TrayIcon:
         """Stop the tray icon. Called during shutdown."""
         self._icon.stop()
         logger.info("TrayIcon stopped")
+
+    def set_status(self, message: str) -> None:
+        """Expose pipeline outcomes without including dictated contents."""
+        self._status = message
+        self._icon.title = f"VoiceType — {message}"[:120]
+        # Windows caches the native menu; changing its callable label alone
+        # does not refresh it. Use pystray's public update path from the same
+        # controller thread that already updates the icon and tooltip.
+        try:
+            self._icon.update_menu()
+        except Exception as exc:
+            # A tray teardown race must not abort dictation or lose its text.
+            logger.warning(f"Could not refresh tray menu: {type(exc).__name__}")

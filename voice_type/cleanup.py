@@ -1,30 +1,14 @@
 """Fast text cleanup — regex-based, no LLM, ~0ms.
 
-Removes filler words, splits into paragraphs by sentence groups,
-formats lists. Zero network latency.
+Preserves words, splits into paragraphs by sentence groups,
+and formats lists. Zero network latency.
 """
 from __future__ import annotations
 
 import re
 
-# === Filler patterns — case-insensitive, word boundaries ===
-# Only pure fillers that are NEVER meaningful in context.
-# Words like "ну", "вот", "смотри", "слушай", "значит", "блин" are
-# often intentional — removing them butchers natural speech.
-_FILLERS_RU = [
-    r"\bкороче\b", r"\bтипа\b", r"\bкак бы\b",
-    r"\bэто самое\b", r"\bтак сказать\b",
-    r"\bэм\b", r"\bэээ+\b", r"\bааа+\b", r"\bммм+\b",
-]
-_FILLERS_EN = [
-    r"\bum\b", r"\buh\b", r"\buhh+\b", r"\bumm+\b",
-    r"\byou know\b", r"\bi mean\b",
-]
-
-_FILLER_PATTERN = re.compile(
-    "|".join(_FILLERS_RU + _FILLERS_EN),
-    re.IGNORECASE,
-)
+# Regex cannot distinguish a hesitation from an intended word or quotation.
+# Leave all words intact; contextual hesitation removal belongs to the LLM.
 
 # === Paragraph split markers ===
 # Sentences that start with these indicate a new topic/paragraph
@@ -56,17 +40,19 @@ _MULTI_SPACE = re.compile(r" {2,}")
 _LEADING_COMMA = re.compile(r"^\s*,\s*")
 _DOUBLE_COMMA = re.compile(r",\s*,")
 _MISSING_SPACE_AFTER_SENTENCE_PUNCT = re.compile(r"(?<=[.!?…])(?=[A-Za-zА-Яа-яЁё])")
-_MISSING_SPACE_BEFORE_UPPER = re.compile(r"(?<=[a-zа-яё])(?=[A-ZА-ЯЁ])")
+# Repair Cyrillic STT word glue without splitting identifiers like VoiceType.
+_MISSING_SPACE_BEFORE_UPPER = re.compile(r"(?<=[а-яё])(?=[А-ЯЁ])")
 _LEADING_PUNCT = re.compile(r"^\s*[,;]\s*", re.MULTILINE)
 _EMPTY_LINES = re.compile(r"\n{3,}")
 
 # Long text threshold — split into paragraphs only for texts > N sentences
 _MIN_SENTENCES_FOR_PARAGRAPHS = 3
+_SENTENCE_END = r"[.!?…]+(?=\s|$)"
 
 
 def _count_sentences(text: str) -> int:
     """Count approximate sentence count."""
-    return len(re.findall(r'[.!?]+', text))
+    return len(re.findall(_SENTENCE_END, text))
 
 
 def _split_paragraphs(text: str) -> str:
@@ -99,12 +85,12 @@ def _split_by_sentence_groups(text: str, group_size: int = 3) -> str:
             out.append(para.strip())
             continue
 
-        parts = re.split(r'([.!?]+\s*)', para)
+        parts = re.split(rf'({_SENTENCE_END}\s*)', para)
         chunk: list[str] = []
         sentence_count = 0
         for part in parts:
             chunk.append(part)
-            if re.match(r'[.!?]+', part):
+            if re.match(_SENTENCE_END, part):
                 sentence_count += 1
                 if sentence_count % group_size == 0:
                     chunk.append("\n\n")
@@ -114,19 +100,13 @@ def _split_by_sentence_groups(text: str, group_size: int = 3) -> str:
 
 
 def fast_clean(text: str) -> str:
-    """Remove filler words, normalize whitespace, split into paragraphs. Zero latency."""
+    """Normalize formatting without deleting words. Zero network latency."""
     if not text.strip():
         return text
 
-    # Step 0: Collapse segment-level linebreaks from Whisper. whisper.cpp
-    # returns one \n per internal 30s window, which used to be smoothed
-    # out by the Gemini round-trip. Now that more long phrases route to
-    # fast_clean, we must normalize them here — paragraphs are
-    # reintroduced later at real topic transitions only.
-    result = re.sub(r"\s*\n+\s*", " ", text)
-
-    # Step 1: Remove fillers
-    result = _FILLER_PATTERN.sub("", result)
+    # Join Whisper segment linebreaks, but preserve deliberate blank paragraphs.
+    paragraphs = re.split(r"\n[ \t]*\n+", text.replace("\r\n", "\n"))
+    result = "\n\n".join(re.sub(r"[ \t]*\n[ \t]*", " ", p) for p in paragraphs)
 
     # Step 2: Fix punctuation artifacts
     result = _DOUBLE_COMMA.sub(",", result)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from voice_type.cleanup import fast_clean
 
 
@@ -28,3 +30,22 @@ def test_fast_clean_breaks_long_monologue_into_paragraphs() -> None:
     assert len(paragraphs) >= 2
     for word in ("Мама", "Кот", "Солнце", "Дождь", "Ветер", "Звёзды"):
         assert word in out
+
+
+@pytest.mark.parametrize("text", [
+    "Сделай текст короче", "Ошибка типа данных", "Как бы не удалить данные",
+    "Это самое важное", "Можно так сказать", "Do you know what I mean?",
+    "Не меняй 12,5 мг на 125 мг", "Буква эм и звук эээ",
+    "Проверь VoiceType, PharmOrder и getClipboardData",
+    "Дозировки 1.5 мг, 2.5 мг, 3.5 мг, 4.5 мг и 5.5 мг",
+])
+def test_meaningful_words_are_never_removed(text: str) -> None:
+    assert fast_clean(text) == text
+
+
+def test_existing_blank_paragraphs_survive_cleanup() -> None:
+    assert fast_clean("Первый абзац.\r\n\r\nВторой абзац.") == "Первый абзац.\n\nВторой абзац."
+
+
+def test_whisper_segment_breaks_still_join() -> None:
+    assert fast_clean("Начало фразы\nи её продолжение") == "Начало фразы и её продолжение"

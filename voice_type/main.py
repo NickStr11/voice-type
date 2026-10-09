@@ -36,6 +36,7 @@ from voice_type.audio import MicrophoneError, check_microphone_access
 from voice_type.config import load_config
 from voice_type.controller import AppController
 from voice_type.hotkey import HotkeyRegistrationError
+from voice_type.stt_whisper import cleanup_stale_temp_files
 from voice_type.tray import TrayIcon
 
 
@@ -61,6 +62,7 @@ def main() -> None:
     # Step 1: Load configuration -- exits 1 on bad config (SYS-03)
     config = load_config()
     configure_logging(runtime_dir, effective_file_log_level(config.log_level, config.log_transcripts))
+    cleanup_stale_temp_files(runtime_dir / "whisper-cpp")
     logger.info(f"Config loaded -- hotkey: {config.hotkey}, project: {config.gcp_project_id}")
 
     # Step 2: Microphone access check -- exits 1 with clear instructions (SYS-02)
@@ -103,11 +105,26 @@ def main() -> None:
         if controller_ref:
             controller_ref[0].stt_provider = provider
 
+    def on_cancel() -> None:
+        if controller_ref:
+            controller_ref[0].cancel_processing()
+
+    def on_copy_last() -> None:
+        if controller_ref:
+            controller_ref[0].copy_last()
+
+    def on_repaste_last() -> None:
+        if controller_ref:
+            controller_ref[0].repaste_last()
+
     tray = TrayIcon(
         on_quit=on_quit,
         on_set_mode=on_set_mode,
         on_set_stt_provider=on_set_stt_provider,
         initial_stt_provider=config.stt_provider,
+        on_cancel=on_cancel,
+        on_copy_last=on_copy_last,
+        on_repaste_last=on_repaste_last,
     )
 
     # Step 5: Create controller with tray reference
@@ -132,16 +149,6 @@ def main() -> None:
     # Step 7: Start tray icon -- non-blocking, runs in its own daemon thread
     tray.run_detached()
 
-    # Step 7.5: Warm up whisper (Vulkan shaders + model cache) in background
-    if config.stt_provider == "local":
-        import threading
-        def _warmup() -> None:
-            try:
-                controller.warmup_local_stt()
-            except Exception as exc:
-                logger.warning(f"Warmup failed (non-fatal): {exc}")
-        threading.Thread(target=_warmup, daemon=True, name="whisper-warmup").start()
-
     logger.info(f"VoiceType ready -- press {config.hotkey} to start/stop recording")
     logger.info("Tray icon active -- right-click tray icon to quit, or press Ctrl+C")
 
@@ -156,6 +163,7 @@ def main() -> None:
     finally:
         # Step 9: Clean shutdown
         controller.stop_hotkey_listener()
+        loop.run_until_complete(controller.finish_pending())
         tray.stop()
         controller.close()
         # Drain any remaining queued events before closing the loop

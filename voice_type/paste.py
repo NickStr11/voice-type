@@ -1,21 +1,14 @@
-"""Paste service — delivers transcribed text into the originally active window.
+"""Deliver dictation with checked focus and a reversible clipboard swap.
 
-Design decisions:
-- pywin32 (NOT pyautogui): pyautogui adds 200ms+ delay and fails silently
-  with Unicode/Russian text in some apps. pywin32 is lower-latency and
-  handles CF_UNICODETEXT natively.
-- SetForegroundWindow + 50ms sleep: the Win32 focus change is asynchronous —
-  keystrokes sent immediately after SetForegroundWindow go to the wrong window.
-  50ms is the minimum reliable wait confirmed in Superwhisper production reports.
-- Clipboard save/restore: preserves user's clipboard content (PST-02 / Pitfall 6).
-  GetClipboardData raises TypeError if clipboard has non-text content (images,
-  files) — catch it and skip restoration for those cases.
-- hwnd=0: indicates window tracking failed or window is gone. Log and skip.
+A successful result means Ctrl+V was sent, not that the destination consumed it.
+Snapshots retain text, HTML/RTF and DIB image bytes. Unsupported handle-based
+formats are left untouched and reported to the caller for manual recovery.
 """
 from __future__ import annotations
 
-import re
+import threading
 import time
+from typing import cast
 
 import win32api  # type: ignore[import-untyped]
 import win32clipboard  # type: ignore[import-untyped]
@@ -23,92 +16,161 @@ import win32con  # type: ignore[import-untyped]
 import win32gui  # type: ignore[import-untyped]
 from loguru import logger
 
+_ClipboardSnapshot = list[tuple[int, str | bytes]]
+_CLIPBOARD_LOCK = threading.Lock()
+
+
+class _UnsupportedClipboard(Exception):
+    pass
+
 
 class PasteService:
-    """Delivers text into a target window via clipboard + Ctrl+V."""
+    """Deliver text and expose a recoverable outcome without logging content."""
 
-    def paste(self, text: str, hwnd: int) -> None:
-        """Paste text into the window identified by hwnd.
+    def __init__(self) -> None:
+        self.last_error: str | None = None
 
-        Sequence:
-            1. Save clipboard
-            2. Restore focus to hwnd via SetForegroundWindow
-            3. Write text to clipboard
-            4. Send Ctrl+V
-            5. Restore original clipboard
+    def paste(self, text: str, hwnd: int) -> bool:
+        """Send Ctrl+V to the captured window, preserving paragraph boundaries."""
+        with _CLIPBOARD_LOCK:
+            return self._paste(text, hwnd)
 
-        Args:
-            text: Text to paste. Must be non-empty.
-            hwnd: Window handle captured at recording stop (REC-04).
-                  Use 0 to skip paste (window not available).
-        """
-        if not text:
-            logger.warning("PasteService.paste() called with empty text — skipping")
-            return
-
-        if hwnd == 0:
-            logger.warning(
-                "PasteService.paste(): hwnd=0 — no target window captured. "
-                f"chars={len(text)}"
-            )
-            return
-
-        # Collapse any run of blank lines to a single \n — pasted blank lines
-        # trigger submit in Claude Code CLI 4.7+ and some chat apps.
-        normalized = re.sub(r"\n\s*\n+", "\n", text).strip()
-
-        # Step 1: Save existing clipboard content
-        original_clip: str | None = _get_clipboard_text()
-
+    def _paste(self, text: str, hwnd: int) -> bool:
+        self.last_error = None
+        if not text.strip():
+            return self._fail("empty_text")
         try:
-            # Step 2: Restore focus to the original window (PST-02)
+            if not hwnd or not win32gui.IsWindow(hwnd):
+                return self._fail("no_target")
             win32gui.SetForegroundWindow(hwnd)
-            time.sleep(0.05)  # focus propagation — SetForegroundWindow is async
-
-            # Step 3+4: Single paste. Modern apps (Telegram Web, Discord, Claude
-            # Code, editors) only submit on Enter KeyPress, not on pasted \n —
-            # so splitting + Shift+Enter emulation is unnecessary and fragile.
-            _set_clipboard_text(normalized)
-            win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)  # pyright: ignore[reportUnknownMemberType]
-            win32api.keybd_event(ord("V"), 0, 0, 0)  # pyright: ignore[reportUnknownMemberType]
-            win32api.keybd_event(ord("V"), 0, win32con.KEYEVENTF_KEYUP, 0)  # pyright: ignore[reportUnknownMemberType]
-            win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)  # pyright: ignore[reportUnknownMemberType]
             time.sleep(0.05)
-
-            logger.info(f"Pasted into HWND {hwnd} — chars: {len(normalized)}")
-
-        finally:
-            # Step 5: Restore original clipboard (always attempt, even on error)
-            if original_clip is not None:
-                _set_clipboard_text(original_clip)
-            # If original was None (non-text content), leave clipboard as-is.
-            # The user's image/file reference is already gone — no way to restore.
-
-
-def _get_clipboard_text() -> str | None:
-    """Return current clipboard text, or None if clipboard has non-text content."""
-    try:
-        win32clipboard.OpenClipboard()  # pyright: ignore[reportUnknownMemberType]
-        try:
-            return str(win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT))  # pyright: ignore[reportUnknownMemberType]
-        except TypeError:
-            # No text in clipboard (image, file, or empty)
-            return None
-    except Exception as exc:
-        logger.debug(f"Could not read clipboard: {exc}")
-        return None
-    finally:
-        try:
-            win32clipboard.CloseClipboard()  # pyright: ignore[reportUnknownMemberType]
+            if win32gui.GetForegroundWindow() != hwnd:
+                return self._fail("focus_failed")
         except Exception:
-            pass
+            return self._fail("focus_failed")
+
+        try:
+            snapshot, sequence = _replace_clipboard(text)
+        except _UnsupportedClipboard:
+            return self._fail("unsupported_clipboard")
+        except Exception:
+            return self._fail("clipboard_unavailable")
+
+        try:
+            # Focus can change while waiting for another clipboard owner.
+            if win32gui.GetForegroundWindow() != hwnd:
+                return self._fail("focus_failed")
+            try:
+                win32api.keybd_event(win32con.VK_CONTROL, 0, 0, 0)
+                win32api.keybd_event(ord("V"), 0, 0, 0)
+            finally:
+                # Release both keys even when injection fails halfway through.
+                try:
+                    win32api.keybd_event(ord("V"), 0, win32con.KEYEVENTF_KEYUP, 0)
+                finally:
+                    win32api.keybd_event(win32con.VK_CONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)
+            time.sleep(0.15)
+            logger.info(f"Paste shortcut sent to HWND {hwnd} — chars: {len(text)}")
+            return True
+        except Exception:
+            return self._fail("paste_failed")
+        finally:
+            try:
+                _restore_clipboard(snapshot, sequence)
+            except Exception:
+                # Do not report injection failure after sending Ctrl+V: retrying
+                # could duplicate text. The recovery text stays with the caller.
+                self.last_error = self.last_error or "clipboard_restore_failed"
+                logger.warning("Could not restore clipboard after paste")
+
+    def copy(self, text: str) -> bool:
+        """Explicit user action: replace clipboard with the retained transcript."""
+        with _CLIPBOARD_LOCK:
+            self.last_error = None
+            if not text.strip():
+                return self._fail("empty_text")
+            try:
+                _set_clipboard_text(text)
+            except Exception:
+                return self._fail("clipboard_unavailable")
+            return True
+
+    def _fail(self, reason: str) -> bool:
+        self.last_error = reason
+        logger.warning(f"PasteService: {reason}")
+        return False
+
+
+def _snapshot_clipboard() -> _ClipboardSnapshot:
+    """Snapshot while clipboard is open; never retain native object handles."""
+    formats: list[int] = []
+    fmt = cast(int, win32clipboard.EnumClipboardFormats(0))
+    while fmt:
+        formats.append(fmt)
+        fmt = cast(int, win32clipboard.EnumClipboardFormats(fmt))
+
+    snapshot: _ClipboardSnapshot = []
+    has_dib = win32con.CF_DIB in formats or win32con.CF_DIBV5 in formats
+    for fmt in formats:
+        # Windows can regenerate bitmap/palette formats from the preserved DIB.
+        if has_dib and fmt in (win32con.CF_BITMAP, win32con.CF_PALETTE):
+            continue
+        if fmt in (
+            win32con.CF_BITMAP, win32con.CF_PALETTE, win32con.CF_METAFILEPICT,
+            win32con.CF_ENHMETAFILE, win32con.CF_OWNERDISPLAY,
+            win32con.CF_DSPBITMAP, win32con.CF_DSPMETAFILEPICT, win32con.CF_DSPENHMETAFILE,
+        ):
+            # Even when Get returns metafile bytes, Set expects a native handle,
+            # not a global-memory buffer. Refuse before emptying the clipboard.
+            raise _UnsupportedClipboard()
+        data = win32clipboard.GetClipboardData(fmt)
+        if not isinstance(data, (str, bytes)):
+            # CF_BITMAP/metafiles return borrowed handles invalid after Empty.
+            # CF_HDROP returns paths instead of the original DROPFILES block.
+            raise _UnsupportedClipboard()
+        snapshot.append((fmt, data))
+    return snapshot
+
+
+def _replace_clipboard(text: str) -> tuple[_ClipboardSnapshot, int]:
+    """Snapshot and swap under one clipboard lock to avoid overwriting a copy."""
+    win32clipboard.OpenClipboard()
+    try:
+        snapshot = _snapshot_clipboard()
+        win32clipboard.EmptyClipboard()
+        try:
+            win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
+        except Exception:
+            _write_snapshot(snapshot)
+            raise
+        sequence = cast(int, win32clipboard.GetClipboardSequenceNumber())
+        return snapshot, sequence
+    finally:
+        win32clipboard.CloseClipboard()
+
+
+def _write_snapshot(snapshot: _ClipboardSnapshot) -> None:
+    """Caller holds the clipboard lock."""
+    win32clipboard.EmptyClipboard()
+    for fmt, data in snapshot:
+        win32clipboard.SetClipboardData(fmt, data)
+
+
+def _restore_clipboard(snapshot: _ClipboardSnapshot, sequence: int) -> None:
+    win32clipboard.OpenClipboard()
+    try:
+        # Check while locked: another application may have copied something
+        # during the paste delay, even text identical to the dictated text.
+        if win32clipboard.GetClipboardSequenceNumber() == sequence:
+            _write_snapshot(snapshot)
+    finally:
+        win32clipboard.CloseClipboard()
 
 
 def _set_clipboard_text(text: str) -> None:
-    """Write text to clipboard as CF_UNICODETEXT."""
-    win32clipboard.OpenClipboard()  # pyright: ignore[reportUnknownMemberType]
+    win32clipboard.OpenClipboard()
     try:
-        win32clipboard.EmptyClipboard()  # pyright: ignore[reportUnknownMemberType]
-        win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)  # pyright: ignore[reportUnknownMemberType]
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
     finally:
-        win32clipboard.CloseClipboard()  # pyright: ignore[reportUnknownMemberType]
+        win32clipboard.CloseClipboard()

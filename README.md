@@ -36,6 +36,20 @@ set, VoiceType runs **fully offline** and falls back to a fast regex cleanup.
 The window that is focused **when you stop recording** is the paste target —
 so you can start talking, tab away, and the text still lands in the right place.
 
+While processing, additional recording hotkeys are ignored. Right-click the
+tray icon for **Отменить обработку**, **Скопировать последний текст**, or
+**Повторить вставку в прежнее окно**. Cancellation suppresses a result that has
+not yet been pasted; an in-flight recognition/cleanup request finishes in the
+background before the next recording can start. An already started paste or
+Cypher action cannot be undone by cancellation.
+
+The last recognized/cleaned text stays in memory until VoiceType exits. Retry
+targets the original window; use Copy to place the text somewhere else.
+The status reports that the paste shortcut was sent, rather than claiming the
+destination accepted it. Unsupported clipboard formats are left untouched and
+the text remains available through Copy. Paragraphs and meaningful words are
+preserved by local cleanup and paste.
+
 If a transcript starts with the wake word **"Cypher"** (or "Сайфер"), it is
 routed to the Cypher command parser instead of being pasted.
 
@@ -93,9 +107,11 @@ This is **optional and free** for normal use:
 
 **Cost:** practically nothing. Your **audio stays local** — only the short
 transcript is sent for cleanup (a few hundred tokens per dictation). The free
-tier (hundreds of requests/day, large token budget) easily covers everyday
-personal dictation. Short utterances skip Gemini entirely and use the instant
-offline regex pass.
+tier has a small daily request quota **per model** (20/day for
+`gemini-2.5-flash` as of 2026-10), so VoiceType rotates through a chain of
+models (`VOICETYPE_GEMINI_MODELS`). A model that runs out is paused until its
+quota resets instead of being retried. Short utterances skip Gemini entirely
+and use the instant offline regex pass.
 
 **No key?** VoiceType still works fully offline — cleanup falls back to the
 regex pass (filler removal, punctuation, paragraph splitting). And if Gemini
@@ -116,6 +132,7 @@ All settings live in `.env` (copied from `.env.example`). `.env` is gitignored �
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `GEMINI_API_KEY` | no | — | Free AI Studio key — enables Gemini cleanup. Empty = offline regex cleanup |
+| `VOICETYPE_GEMINI_MODELS` | no | `gemini-2.5-flash-lite,gemini-3.5-flash-lite,gemini-2.5-flash` | Cleanup model chain, tried in order. A model that hits its quota is paused until the API says it resets |
 | `VOICETYPE_STT_PROVIDER` | no | `local` | `local` (Whisper, offline) or `cloud` (Chirp 3) |
 | `VOICETYPE_CLOUD_FALLBACK` | no | `0` | If `1`, local mode retries empty Whisper results with cloud STT. Audio may leave the machine |
 | `VOICETYPE_HOTKEY` | no | `<ctrl>+<alt>+r` | Recording toggle hotkey |
@@ -273,10 +290,15 @@ Playwright browsers install with `uv run playwright install chromium`.
 
 ## Autostart (optional)
 
-`scripts/voicetype.vbs` is a tiny watchdog: it launches `pythonw -m
+`scripts/watchdog.ps1` is a tiny watchdog: it launches `pythonw -m
 voice_type.main` hidden, checks every 30 s, and relaunches the worker if it
-dies. To run VoiceType at logon, create a shortcut to `voicetype.vbs` in your
-Startup folder (`shell:startup`).
+dies. To run VoiceType at logon, install current-user autostart. This writes
+both a Startup shortcut and an `HKCU\...\Run\VoiceType` fallback; the watchdog
+uses a mutex, so duplicate logon triggers do not create duplicate watchdogs.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install-startup-link.ps1
+```
 
 `scripts/restart.bat` kills and relaunches the worker manually (resolves the
 repo root relative to itself, so it works wherever the repo is checked out).
@@ -285,6 +307,15 @@ To inspect login triggers and running workers/watchdogs:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/audit-autostart.ps1
+```
+
+Optional stronger resume hook: if Windows sleep/resume still kills the tray
+worker or the watchdog and Task Scheduler creation is allowed on your account,
+install the resilience tasks. They run an idempotent guard at logon and after
+`Microsoft-Windows-Power-Troubleshooter` resume events:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install-resilience-tasks.ps1
 ```
 
 If it reports duplicate login triggers (`HKCU Run` + `Startup` link), remove the

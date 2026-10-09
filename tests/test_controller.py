@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,8 +14,14 @@ import pytest
 
 # win32 mocks are installed in tests/conftest.py before any imports
 from voice_type.config import AppConfig
-from voice_type.controller import AppController, State
+from voice_type.controller import MAX_RECORDING_DURATION_S, AppController, State
 from voice_type.cypher import CypherCommand
+
+
+async def wait_until(predicate: Callable[[], bool]) -> None:
+    async with asyncio.timeout(2):
+        while not predicate():
+            await asyncio.sleep(0.001)
 
 
 @pytest.fixture()
@@ -111,6 +120,28 @@ async def test_hotkey_ignored_during_processing(controller: AppController) -> No
     await controller._handle_hotkey()
 
     recorder_mock.start.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_local_stt_warms_up_when_recording_starts(controller: AppController) -> None:
+    controller._config = replace(controller._config, stt_provider="local")
+    controller.stt_provider = "local"
+    controller._recorder = MagicMock()
+
+    with patch.object(controller._stt_whisper, "warmup") as mock_warmup:
+        await controller._start_recording()
+
+    mock_warmup.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_recording_timeout_enqueues_stop(controller: AppController) -> None:
+    controller._state = State.RECORDING
+
+    controller._on_recording_timeout()
+
+    assert await controller._queue.get() == "hotkey"
+    assert MAX_RECORDING_DURATION_S == 15 * 60
 
 
 @pytest.mark.asyncio
@@ -505,3 +536,211 @@ async def test_prefixed_cypher_command_can_paste_text_result(controller: AppCont
     controller._cypher.execute.assert_called_once()
     controller._paste.paste.assert_called_once_with("РїРµСЂРІРѕРµ\n\nРІС‚РѕСЂРѕРµ", 1)
 
+
+@pytest.mark.asyncio
+async def test_run_loop_drops_hotkey_received_during_processing(controller: AppController) -> None:
+    controller._paste = MagicMock()
+    controller._llm = MagicMock()
+    controller._loop = asyncio.get_running_loop()
+    controller.mode = "fast"
+    controller._state = State.RECORDING
+    controller._recorder = MagicMock()
+    controller._recorder.stop.return_value = np.full(16000, 500, dtype=np.int16)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def transcribe(_: bytes) -> str:
+        entered.set()
+        await release.wait()
+        return "Тест"
+
+    controller._transcribe = AsyncMock(side_effect=transcribe)
+    controller._paste.paste.return_value = True
+    with patch("voice_type.controller.capture_active_window", return_value=42):
+        runner = asyncio.create_task(controller.run())
+        try:
+            controller._on_hotkey_from_thread()
+            await asyncio.wait_for(entered.wait(), 2)
+            controller._on_hotkey_from_thread()
+            await asyncio.sleep(0.01)
+            release.set()
+            await wait_until(lambda: controller._state == State.IDLE)
+            await asyncio.sleep(0.01)
+            controller._recorder.start.assert_not_called()
+            controller._paste.paste.assert_called_once()
+        finally:
+            release.set()
+            controller.shutdown()
+            await asyncio.wait_for(runner, 2)
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_stt_keeps_late_text_without_paste(controller: AppController) -> None:
+    controller._paste = MagicMock()
+    controller._llm = MagicMock()
+    controller._loop = asyncio.get_running_loop()
+    controller._state = State.RECORDING
+    controller._recorder = MagicMock()
+    controller._recorder.stop.return_value = np.full(16000, 500, dtype=np.int16)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def transcribe(_: bytes) -> str:
+        entered.set()
+        await release.wait()
+        return "Сохранить мысль"
+
+    controller._transcribe = AsyncMock(side_effect=transcribe)
+    with patch("voice_type.controller.capture_active_window", return_value=42):
+        task = asyncio.create_task(controller._stop_and_process())
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            controller.cancel_processing()
+            await asyncio.sleep(0)
+            assert controller._state == State.PROCESSING
+            assert controller._cancel_requested
+            release.set()
+            await asyncio.wait_for(task, 2)
+        finally:
+            release.set()
+            await task
+    assert controller.last_raw_text == "Сохранить мысль"
+    assert controller.last_text == "Сохранить мысль"
+    assert controller._state == State.IDLE
+    controller._paste.paste.assert_not_called()
+    controller._llm.clean.assert_not_called()
+    assert "Отменено" in controller.status
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_worker_cleanup_never_pastes_late_result(controller: AppController) -> None:
+    controller._paste = MagicMock()
+    controller._llm = MagicMock()
+    controller._loop = asyncio.get_running_loop()
+    controller.mode = "full"
+    controller._state = State.RECORDING
+    controller._recorder = MagicMock()
+    controller._recorder.stop.return_value = np.full(16000, 500, dtype=np.int16)
+    controller._transcribe = AsyncMock(return_value="черновик")
+    entered, release = threading.Event(), threading.Event()
+
+    def delayed_cleanup(_: str) -> str:
+        entered.set()
+        if not release.wait(3):
+            raise TimeoutError("test release was not signaled")
+        return "Черновик."
+
+    controller._llm.clean.side_effect = delayed_cleanup
+    with patch("voice_type.controller.capture_active_window", return_value=42):
+        task = asyncio.create_task(controller._stop_and_process())
+        try:
+            await wait_until(entered.is_set)
+            controller.cancel_processing()
+            await asyncio.sleep(0)
+            assert not task.done()  # The thread stays owned until it really finishes.
+            assert controller.last_text == "черновик"
+            release.set()
+            await asyncio.wait_for(task, 2)
+        finally:
+            release.set()
+            await task
+    controller._paste.paste.assert_not_called()
+    assert controller.last_text == "Черновик."
+    assert controller._state == State.IDLE
+
+
+@pytest.mark.asyncio
+async def test_failed_paste_can_copy_and_retry_saved_target(controller: AppController) -> None:
+    controller._paste = MagicMock()
+    controller._llm = MagicMock()
+    controller.mode = "fast"
+    controller._state = State.RECORDING
+    controller._recorder = MagicMock()
+    controller._recorder.stop.return_value = np.full(16000, 500, dtype=np.int16)
+    controller._transcribe = AsyncMock(return_value="Сохранённый текст")
+    controller._paste.paste.return_value = False
+    with patch("voice_type.controller.capture_active_window", return_value=42):
+        await controller._stop_and_process()
+    assert "не удалась" in controller.status
+    saved = controller.last_text
+    assert saved
+    controller._paste.copy.return_value = True
+    await controller._recover_last(copy_only=True)
+    controller._paste.copy.assert_called_once_with(saved)
+    assert controller.status == "Текст скопирован"
+    controller._paste.paste.return_value = True
+    with patch("voice_type.controller.capture_active_window", return_value=999):
+        await controller._recover_last(copy_only=False)
+    controller._paste.paste.assert_called_with(saved, 42)
+    assert "отправлена" in controller.status
+
+
+@pytest.mark.asyncio
+async def test_cleanup_exception_keeps_raw_text_for_recovery(controller: AppController) -> None:
+    controller._paste = MagicMock()
+    controller._llm = MagicMock()
+    controller.mode = "full"
+    controller._state = State.RECORDING
+    controller._recorder = MagicMock()
+    controller._recorder.stop.return_value = np.full(16000, 500, dtype=np.int16)
+    controller._transcribe = AsyncMock(return_value="Не потерять")
+    controller._llm.clean.side_effect = RuntimeError("simulated cleanup failure")
+    with patch("voice_type.controller.capture_active_window", return_value=42):
+        await controller._stop_and_process()
+    assert controller.last_text == "Не потерять"
+    assert "Ошибка" in controller.status
+    controller._paste.paste.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_recovery_cannot_race_an_active_pipeline(controller: AppController) -> None:
+    controller._paste = MagicMock()
+    controller._llm = MagicMock()
+    controller.last_text = "Предыдущая запись"
+    controller._state = State.PROCESSING
+    await controller._recover_last(copy_only=True)
+    await controller._recover_last(copy_only=False)
+    controller._paste.copy.assert_not_called()
+    controller._paste.paste.assert_not_called()
+
+
+def test_cancel_does_not_claim_to_undo_dispatched_action(controller: AppController) -> None:
+    controller._paste = MagicMock()
+    controller._llm = MagicMock()
+    controller._state = State.PROCESSING
+    controller._side_effect_started = True
+    controller._cancel_processing()
+    assert not controller._cancel_requested
+    assert "уже началось" in controller.status
+
+@pytest.mark.asyncio
+async def test_shutdown_drains_inflight_recognition_without_late_paste(controller: AppController) -> None:
+    controller._loop = asyncio.get_running_loop()
+    controller._state = State.RECORDING
+    controller._recorder = MagicMock()
+    controller._recorder.stop.return_value = np.full(16000, 500, dtype=np.int16)
+    controller._paste = MagicMock()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def transcribe(_: bytes) -> str:
+        entered.set()
+        await release.wait()
+        return "Поздний результат"
+
+    controller._transcribe = AsyncMock(side_effect=transcribe)
+    with patch("voice_type.controller.capture_active_window", return_value=42):
+        runner = asyncio.create_task(controller.run())
+        try:
+            controller._on_hotkey_from_thread()
+            await asyncio.wait_for(entered.wait(), 2)
+            controller.shutdown()
+            await wait_until(lambda: controller._cancel_requested)
+            assert not runner.done()
+            release.set()
+            await asyncio.wait_for(runner, 2)
+        finally:
+            release.set()
+            if not runner.done():
+                controller.shutdown()
+                await asyncio.wait_for(runner, 2)
+    controller._paste.paste.assert_not_called()
+    assert controller.last_text == "Поздний результат"
+    assert controller._state == State.IDLE

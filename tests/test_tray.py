@@ -145,3 +145,40 @@ def test_stt_provider_radio_true() -> None:
                 radio_labels.append(call.args[0])
         assert "Local (Whisper)" in radio_labels, f"'Local (Whisper)' missing radio=True: {radio_labels}"
         assert "Cloud (Chirp 3)" in radio_labels, f"'Cloud (Chirp 3)' missing radio=True: {radio_labels}"
+
+
+def test_recovery_and_cancel_menu_callbacks() -> None:
+    with patch("voice_type.tray.pystray.Icon"), \
+         patch("voice_type.tray.pystray.Menu"), \
+         patch("voice_type.tray.pystray.MenuItem") as items:
+        cancel, copy, repaste = MagicMock(), MagicMock(), MagicMock()
+        TrayIcon(on_quit=lambda: None, on_cancel=cancel, on_copy_last=copy, on_repaste_last=repaste)
+        handlers = {call.args[0]: call.args[1] for call in items.call_args_list if isinstance(call.args[0], str)}
+        handlers["Отменить обработку"](None)
+        handlers["Скопировать последний текст"](None)
+        handlers["Повторить вставку в прежнее окно"](None)
+        cancel.assert_called_once_with()
+        copy.assert_called_once_with()
+        repaste.assert_called_once_with()
+
+
+def test_status_is_visible_in_tooltip_and_menu_without_transcript() -> None:
+    with patch("voice_type.tray.pystray.Icon") as icon, \
+         patch("voice_type.tray.pystray.Menu"), \
+         patch("voice_type.tray.pystray.MenuItem") as items:
+        tray = TrayIcon(on_quit=lambda: None)
+        tray.set_status("Вставка не удалась. Текст сохранён")
+        assert "Вставка не удалась" in icon.return_value.title
+        status_item = next(call for call in items.call_args_list if callable(call.args[0]))
+        assert status_item.args[0](None) == "Вставка не удалась. Текст сохранён"
+        icon.return_value.update_menu.assert_called_once_with()
+
+
+def test_menu_refresh_failure_does_not_abort_status_update() -> None:
+    with patch("voice_type.tray.pystray.Icon") as icon, \
+         patch("voice_type.tray.pystray.Menu"), \
+         patch("voice_type.tray.pystray.MenuItem"):
+        icon.return_value.update_menu.side_effect = RuntimeError("tray is stopping")
+        tray = TrayIcon(on_quit=lambda: None)
+        tray.set_status("Текст сохранён")
+        assert "Текст сохранён" in icon.return_value.title

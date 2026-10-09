@@ -44,6 +44,7 @@ from voice_type.window import capture_active_window
 # network round-trip for a couple of words.
 FAST_CLEANUP_MAX_DURATION_S = 3.0
 FAST_CLEANUP_MAX_CHARS = 120
+MAX_RECORDING_DURATION_S = 15 * 60
 
 
 class AppController:
@@ -72,6 +73,14 @@ class AppController:
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._target_hwnd: int = 0
         self._tray = tray
+        self._recording_timeout: asyncio.TimerHandle | None = None
+        self._processing_task: asyncio.Task[None] | None = None
+        self._cancel_requested = False
+        self._side_effect_started = False
+        self.last_text = ""
+        self.last_raw_text = ""
+        self._last_target_hwnd = 0
+        self.status = "Готов к записи"
 
         # Pipeline components -- initialized once, reused per recording
         self._stt = STTClient(config) if config.gcp_credentials_path is not None else None
@@ -129,7 +138,59 @@ class AppController:
         call_soon_threadsafe -- the only safe way to enqueue work
         from a non-asyncio thread into an asyncio loop.
         """
-        self._loop.call_soon_threadsafe(self._queue.put_nowait, "hotkey")
+        self._loop.call_soon_threadsafe(self._enqueue_hotkey)
+
+    def _enqueue_hotkey(self) -> None:
+        # Drop the event when received, not after an in-flight pipeline finishes.
+        if self._state != State.PROCESSING:
+            self._queue.put_nowait("hotkey")
+
+    def _set_status(self, message: str) -> None:
+        self.status = message
+        if self._tray is not None:
+            self._tray.set_status(message)
+
+    def cancel_processing(self) -> None:
+        self._loop.call_soon_threadsafe(self._cancel_processing)
+
+    def _cancel_processing(self) -> None:
+        if self._state != State.PROCESSING:
+            return
+        if self._side_effect_started:
+            self._set_status("Действие уже началось; отменить его нельзя")
+            return
+        self._cancel_requested = True
+        self._set_status("Отменено. Жду завершения фонового запроса")
+
+    def copy_last(self) -> None:
+        self._loop.call_soon_threadsafe(self._queue.put_nowait, "copy_last")
+
+    def repaste_last(self) -> None:
+        self._loop.call_soon_threadsafe(self._queue.put_nowait, "repaste_last")
+
+    async def _recover_last(self, copy_only: bool) -> None:
+        if self._state != State.IDLE:
+            self._set_status("Повторить можно после завершения записи или обработки")
+            return
+        if not self.last_text:
+            self._set_status("Сохранённого текста пока нет")
+            return
+        try:
+            if copy_only:
+                success = await asyncio.to_thread(self._paste.copy, self.last_text)
+                self._set_status("Текст скопирован" if success else "Не удалось скопировать; текст сохранён")
+            else:
+                await self._deliver_text(self.last_text, self._last_target_hwnd)
+        except Exception as exc:
+            logger.error(f"Recovery error: {type(exc).__name__}")
+            self._set_status("Не удалось восстановить текст; попробуй ещё раз")
+
+    async def _deliver_text(self, text: str, hwnd: int) -> None:
+        success = await asyncio.to_thread(self._paste.paste, text, hwnd)
+        self._set_status(
+            "Вставка отправлена. Текст доступен для повтора"
+            if success else "Вставка не удалась. Текст сохранён — скопируй или повтори"
+        )
 
     async def run(self) -> None:
         """Main event loop -- process hotkey events until shutdown.
@@ -142,9 +203,17 @@ class AppController:
                 event = await self._queue.get()
                 if event == "shutdown":
                     logger.info("Shutdown signal received")
+                    await self.finish_pending()
                     break
                 if event == "hotkey":
-                    await self._handle_hotkey()
+                    if self._state == State.RECORDING:
+                        self._processing_task = asyncio.create_task(self._stop_and_process())
+                        # Let the task enter PROCESSING before consuming another event.
+                        await asyncio.sleep(0)
+                    else:
+                        await self._handle_hotkey()
+                elif event in {"copy_last", "repaste_last"}:
+                    await self._recover_last(copy_only=event == "copy_last")
         except asyncio.CancelledError:
             pass
 
@@ -161,20 +230,43 @@ class AppController:
         """IDLE -> RECORDING: open mic stream, update state and tray."""
         logger.info("Recording started")
 
+        if self.stt_provider == "local":
+            self._stt_whisper.warmup()
+
         try:
             await asyncio.to_thread(self._recorder.start)
         except MicrophoneError as exc:
             logger.error(f"Cannot start recording: {exc}")
+            self._set_status("Микрофон недоступен. Проверь подключение")
             return
         self._state = State.RECORDING
+        self._recording_timeout = self._loop.call_later(
+            MAX_RECORDING_DURATION_S,
+            self._on_recording_timeout,
+        )
         if self._tray is not None:
             self._tray.set_state(State.RECORDING)
+        self._set_status("Запись")
+
+    def _on_recording_timeout(self) -> None:
+        if self._state != State.RECORDING:
+            return
+        logger.warning(
+            f"Recording reached the {MAX_RECORDING_DURATION_S // 60}-minute safety limit; stopping automatically"
+        )
+        self._queue.put_nowait("hotkey")
 
     async def _stop_and_process(self) -> None:
         """RECORDING -> PROCESSING: run full STT -> LLM -> paste pipeline."""
+        if self._recording_timeout is not None:
+            self._recording_timeout.cancel()
+            self._recording_timeout = None
         self._state = State.PROCESSING
+        self._cancel_requested = False
+        self._side_effect_started = False
         if self._tray is not None:
             self._tray.set_state(State.PROCESSING)
+        self._set_status("Распознаю речь")
 
         # Capture active window HWND NOW -- while original app is still foreground.
         # REC-04: capture at recording stop, not at paste time.
@@ -186,6 +278,8 @@ class AppController:
 
             # Stop audio capture
             audio: npt.NDArray[np.int16] = await asyncio.to_thread(self._recorder.stop)
+            if self._cancel_requested:
+                return
             raw_duration_s = len(audio) / 16_000
             t_stop = _time.perf_counter()
             logger.info(
@@ -204,6 +298,7 @@ class AppController:
             )
             if not len(trimmed_audio):
                 logger.info("Audio is silence after trimming -- nothing to transcribe")
+                self._set_status("Речь не обнаружена. Можно повторить запись")
                 return
 
             # STT + LLM cleanup — batch STT (streaming Chirp 3 is slower)
@@ -214,6 +309,13 @@ class AppController:
 
             if not raw_text:
                 logger.info("STT returned empty -- nothing to paste")
+                self._set_status("Не удалось распознать речь. Можно повторить запись")
+                return
+
+            self.last_raw_text = raw_text
+            self.last_text = raw_text
+            self._last_target_hwnd = self._target_hwnd
+            if self._cancel_requested:
                 return
 
             command_body = extract_cypher_body(raw_text)
@@ -221,12 +323,20 @@ class AppController:
                 command = parse_cypher_command(raw_text)
                 if command is None and self._cypher_planner is not None:
                     command = await asyncio.to_thread(self._cypher_planner.plan, command_body)
+                if self._cancel_requested:
+                    return
                 if command is None:
                     logger.warning("Cypher command not understood")
+                    self._set_status("Команда не распознана. Текст доступен для копирования")
                     return
+                self._side_effect_started = True
+                self._set_status("Выполняю команду")
                 command_result = await asyncio.to_thread(self._cypher.execute, command)
                 if command_result:
-                    await asyncio.to_thread(self._paste.paste, command_result, self._target_hwnd)
+                    self.last_text = command_result
+                    await self._deliver_text(command_result, self._target_hwnd)
+                else:
+                    self._set_status("Команда завершена")
                 t_end = _time.perf_counter()
                 logger.info(
                     f"CYPHER TOTAL: {t_end - t0:.2f}s "
@@ -235,6 +345,7 @@ class AppController:
                 return
 
             cleanup_mode = self._resolve_cleanup_mode(trimmed_duration_s, raw_text)
+            self._set_status("Оформляю текст")
             logger.info(
                 f"Cleanup mode: {cleanup_mode} "
                 f"(selected={self.mode}, speech={trimmed_duration_s:.2f}s, chars={len(raw_text)})"
@@ -259,9 +370,14 @@ class AppController:
                 logger.info(f"Local cleanup [{t_llm - t_stt:.2f}s]")
 
             # Paste into saved window
+            self.last_text = clean_text
+            if self._cancel_requested:
+                return
             if self._log_transcripts:
                 logger.debug(f"CLEANED text ({cleanup_mode}): {clean_text!r}")
-            await asyncio.to_thread(self._paste.paste, clean_text, self._target_hwnd)
+            self._side_effect_started = True
+            self._set_status("Отправляю вставку")
+            await self._deliver_text(clean_text, self._target_hwnd)
             t_end = _time.perf_counter()
             logger.info(
                 f"PIPELINE TOTAL: {t_end - t0:.2f}s "
@@ -271,10 +387,15 @@ class AppController:
 
         except Exception as exc:
             logger.error(f"Pipeline error: {exc}")
+            self._set_status("Ошибка обработки. Последний доступный текст можно скопировать")
         finally:
             self._state = State.IDLE
             if self._tray is not None:
                 self._tray.set_state(State.IDLE)
+            if self._cancel_requested:
+                self._set_status("Отменено. Готов к записи; последний текст доступен в меню")
+            else:
+                self._set_status(self.status)
             logger.info("State: IDLE -- ready for next recording")
 
     async def _transcribe(self, audio_bytes: bytes) -> str:
@@ -291,7 +412,7 @@ class AppController:
         """
         if self.stt_provider == "local":
             local_text = await self._stt_whisper.recognize(audio_bytes)
-            if not local_text and self._cloud_fallback_enabled and self._stt is not None:
+            if not local_text and not self._cancel_requested and self._cloud_fallback_enabled and self._stt is not None:
                 logger.warning("Local STT empty -- falling back to cloud once")
                 return await self._stt.recognize(audio_bytes)
             return local_text
@@ -307,8 +428,20 @@ class AppController:
         """Enqueue a shutdown event to stop the run() loop."""
         self._loop.call_soon_threadsafe(self._queue.put_nowait, "shutdown")
 
+    async def finish_pending(self) -> None:
+        """Drain workers without cancelling to_thread and orphaning side effects."""
+        self._cancel_processing()
+        if self._processing_task is not None:
+            await asyncio.shield(self._processing_task)
+        if self._state == State.RECORDING:
+            await asyncio.to_thread(self._recorder.stop)
+            self._state = State.IDLE
+
     def close(self) -> None:
         """Release long-lived clients owned by the controller."""
+        if self._recording_timeout is not None:
+            self._recording_timeout.cancel()
+            self._recording_timeout = None
         self._stt_whisper.shutdown()
         self._cypher.close()
 
