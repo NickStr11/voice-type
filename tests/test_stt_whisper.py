@@ -332,6 +332,90 @@ def test_client_starts_server_warmup_at_initialization(
     mock_ensure.assert_called_once_with(client)
 
 
+async def test_fast_fail_skips_cli_while_server_is_still_starting(
+    config: AppConfig, _mock_paths: tuple[Path, Path]
+) -> None:
+    """With a cloud fallback, a slow cold start costs ~15s, not the minutes-long CLI ladder."""
+    cli, model = _mock_paths
+    with (
+        patch("voice_type.stt_whisper._CLI_EXE", cli),
+        patch("voice_type.stt_whisper._SERVER_EXE", cli.with_name("whisper-server.exe")),
+        patch("voice_type.stt_whisper._MODEL_DIR", model.parent),
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
+        patch.object(WhisperSTTClient, "_server_healthcheck", return_value=False),
+        patch.object(WhisperSTTClient, "_run_cli", return_value="cli text") as mock_cli,
+    ):
+        client = WhisperSTTClient(config)
+        client._server_thread = MagicMock()
+        client._server_ready = MagicMock()
+        client._server_ready.wait.return_value = False
+        result = await client.recognize(b"\x00\x00" * 16000, fast_fail=True)
+
+    assert result == ""
+    client._server_ready.wait.assert_called_once_with(timeout=15.0)
+    mock_cli.assert_not_called()
+
+
+async def test_fast_fail_restarts_failed_server_in_background(
+    config: AppConfig, _mock_paths: tuple[Path, Path]
+) -> None:
+    cli, model = _mock_paths
+    with (
+        patch("voice_type.stt_whisper._CLI_EXE", cli),
+        patch("voice_type.stt_whisper._SERVER_EXE", cli.with_name("whisper-server.exe")),
+        patch("voice_type.stt_whisper._MODEL_DIR", model.parent),
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
+        patch.object(WhisperSTTClient, "_server_healthcheck", return_value=True),
+        patch.object(WhisperSTTClient, "_run_server", return_value=None),
+        patch.object(WhisperSTTClient, "_restart_server_sync", autospec=True) as mock_sync,
+        patch.object(WhisperSTTClient, "_restart_server_background", autospec=True) as mock_bg,
+        patch.object(WhisperSTTClient, "_run_cli", return_value="cli text") as mock_cli,
+    ):
+        client = WhisperSTTClient(config)
+        client._server_available = True
+        client._server_ready.set()
+        result = await client.recognize(b"\x00\x00" * 16000, fast_fail=True)
+
+    assert result == ""
+    mock_bg.assert_called_once_with(client)
+    mock_sync.assert_not_called()
+    mock_cli.assert_not_called()
+
+
+async def test_cli_gpu_timeout_is_not_retried(
+    config: AppConfig, _mock_paths: tuple[Path, Path], tmp_path: Path
+) -> None:
+    cli, model = _mock_paths
+    elapsed = 0.0
+    calls: list[bool] = []
+
+    def fake_cli(wav_path: str, use_gpu: bool = True) -> str:
+        nonlocal elapsed
+        calls.append(use_gpu)
+        if use_gpu:
+            elapsed += 60.5
+            return ""
+        return "cpu result"
+
+    with (
+        patch("voice_type.stt_whisper._CLI_EXE", cli),
+        patch("voice_type.stt_whisper._SERVER_EXE", cli.with_name("whisper-server.exe")),
+        patch("voice_type.stt_whisper._MODEL_DIR", model.parent),
+        patch("voice_type.stt_whisper._WHISPER_DIR", tmp_path),
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
+        patch.object(WhisperSTTClient, "_server_healthcheck", return_value=False),
+        patch.object(WhisperSTTClient, "_run_cli", side_effect=fake_cli),
+        patch("voice_type.stt_whisper.time.perf_counter", side_effect=lambda: elapsed),
+    ):
+        client = WhisperSTTClient(config)
+        client._server_available = False
+        client._server_ready.set()
+        result = await client.recognize(b"\x00\x00" * 16000)
+
+    assert result == "cpu result"
+    assert calls == [True, False]
+
+
 def test_server_can_finish_cold_start_after_25_seconds(
     config: AppConfig, _mock_paths: tuple[Path, Path]
 ) -> None:

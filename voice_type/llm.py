@@ -1,4 +1,4 @@
-"""LLM client — Gemini Flash text cleanup with mandatory wall-clock timeout.
+"""LLM client — transcript cleanup with mandatory wall-clock timeout.
 
 Design decisions:
 - concurrent.futures wall-clock timeout: Gemini 2.5 Flash has a confirmed
@@ -13,7 +13,13 @@ Design decisions:
   (20 requests/day for gemini-2.5-flash as of 2026-10). Try several models in
   order; a 429 pauses only that model, for as long as the API's "retry in ..."
   hint says, so a spent daily quota is not retried every few minutes.
-  Override the chain with VOICETYPE_GEMINI_MODELS.
+  Override the chain with VOICETYPE_CLEANUP_MODELS (VOICETYPE_GEMINI_MODELS is
+  the older name for the same setting).
+- OpenRouter first when OPENROUTER_API_KEY is set: vendor-qualified ids
+  ("meta-llama/...") go through OpenRouter, bare ids ("gemini-...") through the
+  Gemini API. Llama 3.3 70B on Groq formats in ~0.4s vs ~0.8s for direct
+  Gemini and keeps every word; paid but ~$0.0002 per dictation, so the free
+  Gemini quota stays as the tail of the chain (benchmark 2026-10-11).
 - Fallback: if every model fails or the budget runs out, return the local
   regex fast_clean. Silent degradation is better than blocking indefinitely.
 """
@@ -30,6 +36,7 @@ from google.genai import errors as genai_errors
 from google.genai import types
 from loguru import logger
 
+from voice_type import openrouter
 from voice_type.cleanup import fast_clean
 
 _CLEANUP_PROMPT_TEMPLATE: Final[str] = (
@@ -55,6 +62,10 @@ _DEFAULT_MODELS: Final[tuple[str, ...]] = (
     "gemini-3.5-flash-lite",
     "gemini-2.5-flash",
 )
+_OPENROUTER_MODELS: Final[tuple[str, ...]] = (
+    "meta-llama/llama-3.3-70b-instruct",
+    "google/gemini-2.5-flash-lite",
+)
 # Wall-clock budget for the whole model chain, not per model.
 _TIMEOUT_S: Final[float] = 8.0
 _MIN_ATTEMPT_S: Final[float] = 0.5
@@ -72,7 +83,7 @@ _RETRY_DELAY = re.compile(r"retryDelay['\"]?:\s*['\"]?([\d.]+)s")
 
 
 class LLMClient:
-    """Gemini Flash client for voice transcription cleanup."""
+    """OpenRouter / Gemini client for voice transcription cleanup."""
 
     def __init__(self, project: str | None = None) -> None:
         api_key = os.environ.get("GEMINI_API_KEY", "").strip()
@@ -91,13 +102,24 @@ class LLMClient:
             self.available = True
             backend = f"Vertex (project={project})"
         else:
-            # No credentials — cleanup is disabled and the caller falls back to
-            # the regex fast_clean, so VoiceType still runs fully offline.
             self._client = None
             self.available = False
-            backend = "disabled (set GEMINI_API_KEY to enable Gemini cleanup)"
+            backend = ""
 
-        self._models = _configured_models()
+        has_openrouter = bool(openrouter.api_key())
+        self._models = tuple(
+            m for m in _configured_models(has_openrouter)
+            if (has_openrouter if openrouter.is_openrouter_model(m) else self._client is not None)
+        )
+        if has_openrouter:
+            backend = f"OpenRouter + {backend}" if backend else "OpenRouter"
+        if not self._models:
+            # No credentials — cleanup is disabled and the caller falls back to
+            # the regex fast_clean, so VoiceType still runs fully offline.
+            self.available = False
+            backend = "disabled (set OPENROUTER_API_KEY or GEMINI_API_KEY to enable cleanup)"
+        else:
+            self.available = True
         self._model_cooldown_until: dict[str, float] = {}
         self._consecutive_cooldown_failures = 0
         self._cooldown_until = 0.0
@@ -118,7 +140,7 @@ class LLMClient:
         """
         if not raw_text.strip():
             return raw_text
-        if self._client is None:
+        if not self._models:
             return fast_clean(raw_text)
         cooldown_remaining_s = self._cooldown_remaining_s()
         if cooldown_remaining_s > 0:
@@ -132,7 +154,7 @@ class LLMClient:
         if not models:
             soonest = min(self._model_cooldown_remaining_s(m) for m in self._models)
             logger.warning(
-                f"LLM cleanup skipped — every Gemini model is paused (next in {_fmt_s(soonest)}); "
+                f"LLM cleanup skipped — every cleanup model is paused (next in {_fmt_s(soonest)}); "
                 "falling back to regex fast_clean"
             )
             return fast_clean(raw_text)
@@ -159,9 +181,11 @@ class LLMClient:
     def _try_model(self, model: str, prompt: str, timeout_s: float) -> tuple[str, str | None]:
         """Run one model. Returns (outcome, text); outcome is "ok", "next" or "stop"."""
         client = self._client
-        assert client is not None
 
         def _sync_call() -> str | None:
+            if openrouter.is_openrouter_model(model):
+                return openrouter.chat(model, prompt, timeout_s) or None
+            assert client is not None
             response = client.models.generate_content(
                 model=model,
                 contents=prompt,
@@ -187,26 +211,27 @@ class LLMClient:
             # A stall eats the whole budget; repeated stalls point at the
             # network, not one model, so they pause Gemini as a whole.
             self._record_cooldown_failure("timeout")
-            logger.warning(f"Gemini {model} timed out after {timeout_s:.1f}s")
+            logger.warning(f"Cleanup {model} timed out after {timeout_s:.1f}s")
             return "stop", None
-        except genai_errors.APIError as exc:
+        except (genai_errors.APIError, openrouter.OpenRouterError) as exc:
             summary = _error_summary(exc)
             code = getattr(exc, "code", None)
             if _is_rate_limit_error(exc):
-                pause_s = _retry_hint_s(exc) or _RATE_LIMIT_COOLDOWN_S
+                pause_s = getattr(exc, "retry_after_s", None) or _retry_hint_s(exc) or _RATE_LIMIT_COOLDOWN_S
                 self._pause_model(model, pause_s)
-                logger.warning(f"Gemini {model} rate-limited ({summary}); model paused for {_fmt_s(pause_s)}")
+                logger.warning(f"Cleanup {model} rate-limited ({summary}); model paused for {_fmt_s(pause_s)}")
             elif code == 404:
                 self._pause_model(model, _MODEL_GONE_COOLDOWN_S)
-                logger.warning(f"Gemini {model} not available ({summary}); model paused for 24h")
+                logger.warning(f"Cleanup {model} not available ({summary}); model paused for 24h")
             elif isinstance(code, int) and 400 <= code < 500:
+                # Includes OpenRouter 402 (credits spent) and 401 (bad key).
                 self._pause_model(model, _CLIENT_ERROR_COOLDOWN_S)
-                logger.warning(f"Gemini {model} rejected request ({summary}); model paused for 10m")
+                logger.warning(f"Cleanup {model} rejected request ({summary}); model paused for 10m")
             else:
-                logger.warning(f"Gemini {model} server error ({summary}); trying next model")
+                logger.warning(f"Cleanup {model} server error ({summary}); trying next model")
             return "next", None
         except Exception as exc:
-            logger.warning(f"Gemini {model} error: {type(exc).__name__}: {str(exc)[:160]}")
+            logger.warning(f"Cleanup {model} error: {type(exc).__name__}: {str(exc)[:160]}")
             return "stop", None
         finally:
             executor.shutdown(wait=False)
@@ -236,10 +261,12 @@ class LLMClient:
         self._consecutive_cooldown_failures = 0
 
 
-def _configured_models() -> tuple[str, ...]:
-    raw = os.environ.get("VOICETYPE_GEMINI_MODELS", "")
+def _configured_models(has_openrouter: bool = False) -> tuple[str, ...]:
+    raw = os.environ.get("VOICETYPE_CLEANUP_MODELS", "") or os.environ.get("VOICETYPE_GEMINI_MODELS", "")
     models = tuple(dict.fromkeys(m.strip() for m in raw.split(",") if m.strip()))
-    return models or _DEFAULT_MODELS
+    if models:
+        return models
+    return (_OPENROUTER_MODELS + _DEFAULT_MODELS) if has_openrouter else _DEFAULT_MODELS
 
 
 def _generation_config(model: str) -> types.GenerateContentConfig:

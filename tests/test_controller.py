@@ -376,6 +376,7 @@ async def test_local_stt_falls_back_to_cloud_when_whisper_empty(controller: AppC
         await controller._handle_hotkey()
 
     controller._stt_whisper.recognize.assert_called_once()
+    assert controller._stt_whisper.recognize.call_args.kwargs == {"fast_fail": False}
     controller._stt.recognize.assert_not_called()
     controller._paste.paste.assert_not_called()
 
@@ -399,8 +400,35 @@ async def test_local_stt_cloud_fallback_requires_explicit_opt_in(controller: App
         await controller._handle_hotkey()
         await controller._handle_hotkey()
 
+    controller._stt_whisper.recognize.assert_called_once()
+    assert controller._stt_whisper.recognize.call_args.kwargs == {"fast_fail": True}
     controller._stt.recognize.assert_called_once()
     controller._paste.paste.assert_called_once_with("Could we discuss this now?", 10)
+
+
+@pytest.mark.asyncio
+async def test_cloud_fallback_prefers_openrouter_over_chirp(controller: AppController) -> None:
+    controller.stt_provider = "local"
+    controller.mode = "fast"
+    controller._recorder = MagicMock()
+    controller._recorder.start = MagicMock()
+    controller._recorder.stop = MagicMock(return_value=np.full(16000 * 5, 500, dtype=np.int16))
+    controller._stt_whisper.recognize = AsyncMock(return_value="")
+    assert controller._stt is not None
+    controller._stt.recognize = AsyncMock(return_value="chirp")
+    controller._openrouter_stt = MagicMock()
+    controller._openrouter_stt.recognize = AsyncMock(return_value="Через OpenRouter.")
+    controller._paste.paste = MagicMock()
+    controller._cloud_fallback_enabled = True
+
+    with patch("voice_type.controller.capture_active_window", return_value=10), \
+         patch("voice_type.controller.fast_clean", return_value="Через OpenRouter."):
+        await controller._handle_hotkey()
+        await controller._handle_hotkey()
+
+    controller._openrouter_stt.recognize.assert_called_once()
+    controller._stt.recognize.assert_not_called()
+    controller._paste.paste.assert_called_once_with("Через OpenRouter.", 10)
 
 
 @pytest.mark.asyncio

@@ -68,7 +68,8 @@ def load_config() -> AppConfig:
     invalid — this is intentional: a misconfigured app should not start silently.
 
     When stt_provider is "local", GCP credentials are optional (not required).
-    When stt_provider is "cloud" or cloud fallback is enabled, GCP credentials are required.
+    When stt_provider is "cloud", or cloud fallback is enabled without an
+    OPENROUTER_API_KEY, GCP credentials are required.
 
     Returns:
         Validated AppConfig instance.
@@ -116,7 +117,13 @@ def load_config() -> AppConfig:
             creds_path = resolved
     gcp_project_id = os.environ.get("GCP_PROJECT_ID", "").strip()
 
-    requires_gcp = stt_provider != "local" or cloud_fallback or cypher_planner == "gemini"
+    # Cloud fallback runs through OpenRouter when a key is set; Chirp otherwise.
+    has_openrouter = bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
+    requires_gcp = (
+        stt_provider != "local"
+        or (cloud_fallback and not has_openrouter)
+        or cypher_planner == "gemini"
+    )
 
     if requires_gcp:
         if not raw_creds:

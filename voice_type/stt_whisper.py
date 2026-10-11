@@ -50,6 +50,11 @@ _SERVER_TIMEOUT_S = 60.0
 # Cold model uploads can exceed 25s after boot even when Vulkan is healthy.
 # Give startup enough headroom instead of killing it just before it is ready.
 _SERVER_READY_TIMEOUT_S = 60.0
+# When the caller has a cloud fallback, a cold or stuck server is not worth
+# waiting a full minute for: give it this long, then let the cloud answer while
+# the server keeps loading for the next dictation.
+_FAST_FAIL_READY_WAIT_S = 15.0
+_CLI_TIMEOUT_S = 60.0
 
 _TEMP_AUDIO_PREFIXES = ("audio_", "server_audio_")
 _TEMP_OUTPUT_SUFFIXES = (".wav", ".json", ".txt", ".srt", ".vtt", ".csv", ".lrc")
@@ -303,6 +308,13 @@ class WhisperSTTClient:
             self._server_start_error = None
             self._start_server_worker()
 
+    def _restart_server_background(self) -> None:
+        """Kill the server and reload it off the dictation path."""
+        with self._server_lock:
+            self._stop_server_process()
+            self._server_start_error = None
+        self._ensure_server_background()
+
     def _start_resume_watch(self) -> None:
         if self._resume_watch_thread is not None:
             return
@@ -449,7 +461,7 @@ class WhisperSTTClient:
                     cmd,
                     capture_output=True,
                     text=True,
-                    timeout=60,
+                    timeout=_CLI_TIMEOUT_S,
                     env=env,
                     creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
                 )
@@ -495,16 +507,30 @@ class WhisperSTTClient:
         else:
             logger.debug(f"STT still on CPU (streak={self._cpu_fallback_streak})")
 
-    def _transcribe_sync(self, audio_bytes: bytes) -> str:
+    def _transcribe_sync(self, audio_bytes: bytes, fast_fail: bool = False) -> str:
+        """Transcribe locally: resident server, then whisper-cli GPU, then CPU.
+
+        fast_fail=True means the caller has a cloud fallback. Then a server that
+        is still loading or has just failed is not worth the CLI ladder: every
+        CLI attempt reloads the 1.6 GB model, so when the server is slow (cold
+        disk or a stalled GPU after resume) the ladder only adds minutes. Return
+        "" instead and keep the server (re)loading in the background.
+        """
         self._ensure_server_background()
         if self._server_thread is not None:
-            self._server_ready.wait(timeout=_SERVER_READY_TIMEOUT_S)
+            wait_s = _FAST_FAIL_READY_WAIT_S if fast_fail else _SERVER_READY_TIMEOUT_S
+            self._server_ready.wait(timeout=wait_s)
 
         if self._server_available and self._server_healthcheck():
             text = self._run_server(audio_bytes)
             if text is not None:
                 self._note_gpu_alive()
                 return text
+
+            if fast_fail:
+                logger.warning("whisper-server failed — restarting in background, using cloud fallback")
+                self._restart_server_background()
+                return ""
 
             logger.warning("whisper-server failed once, restarting and retrying once")
             self._restart_server_sync()
@@ -513,6 +539,11 @@ class WhisperSTTClient:
                 if text is not None:
                     self._note_gpu_alive()
                     return text
+
+        if fast_fail:
+            state = self._server_start_error or "still starting"
+            logger.warning(f"whisper-server unavailable ({state}) — skipping CLI, using cloud fallback")
+            return ""
 
         if self._server_start_error:
             logger.warning(f"whisper-server unavailable — falling back to CLI ({self._server_start_error})")
@@ -539,10 +570,16 @@ class WhisperSTTClient:
 
         try:
             for attempt in range(2):
+                t0 = time.perf_counter()
                 text = self._run_cli(wav_path, use_gpu=True)
                 if text:
                     self._note_gpu_alive()
                     return text
+                if time.perf_counter() - t0 >= _CLI_TIMEOUT_S:
+                    # A hang is not a transient crash: a second GPU run would
+                    # just burn another minute on the same stall.
+                    logger.warning("CLI GPU timed out — skipping GPU retry")
+                    break
                 if attempt == 0:
                     logger.warning("CLI GPU attempt 1 failed, retrying GPU...")
 
@@ -555,11 +592,11 @@ class WhisperSTTClient:
             except OSError:
                 pass
 
-    async def recognize(self, audio_bytes: bytes) -> str:
+    async def recognize(self, audio_bytes: bytes, fast_fail: bool = False) -> str:
         if not audio_bytes:
             return ""
 
-        text = await asyncio.to_thread(self._transcribe_sync, audio_bytes)
+        text = await asyncio.to_thread(self._transcribe_sync, audio_bytes, fast_fail)
         logger.info(f"Whisper STT result: {len(text)} chars")
         if self._log_transcripts:
             logger.debug(f"Whisper RAW text: {text!r}")

@@ -138,3 +138,12 @@ def test_appconfig_has_whisper_model_field() -> None:
         gcp_project_id="",
     )
     assert config.whisper_model == "large-v3-turbo"
+
+
+def test_cloud_fallback_with_openrouter_key_needs_no_gcp() -> None:
+    env = {"VOICETYPE_CLOUD_FALLBACK": "1", "OPENROUTER_API_KEY": "sk-or-test"}
+    with patch("voice_type.config.load_dotenv", _no_dotenv), \
+         patch.dict(os.environ, env, clear=True):
+        config = load_config()
+    assert config.cloud_fallback is True
+    assert config.gcp_credentials_path is None

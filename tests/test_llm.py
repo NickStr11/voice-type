@@ -10,6 +10,7 @@ from google.genai import types
 
 from voice_type.cleanup import fast_clean
 from voice_type.llm import LLMClient
+from voice_type.openrouter import OpenRouterError
 
 
 @pytest.fixture(autouse=True)
@@ -17,6 +18,9 @@ def gemini_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default tests through the AI Studio (api_key) backend so the mocked
     genai.Client gets constructed. Individual tests override as needed."""
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("VOICETYPE_CLEANUP_MODELS", raising=False)
+    monkeypatch.delenv("VOICETYPE_GEMINI_MODELS", raising=False)
 
 
 def test_clean_returns_cleaned_text() -> None:
@@ -253,3 +257,36 @@ def test_unavailable_without_key_or_project(monkeypatch: pytest.MonkeyPatch) -> 
         # No client → cleanup still formats locally via regex fast_clean.
         assert client.clean("раз два три") == fast_clean("раз два три")
         mock_cls.assert_not_called()
+
+
+def test_openrouter_key_puts_llama_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    with patch("voice_type.llm.genai.Client") as mock_cls, \
+         patch("voice_type.llm.openrouter.chat", return_value="Готово.") as mock_chat:
+        result = LLMClient().clean("готово")
+
+    assert result == "Готово."
+    assert mock_chat.call_args.args[0] == "meta-llama/llama-3.3-70b-instruct"
+    mock_cls.return_value.models.generate_content.assert_not_called()
+
+
+def test_openrouter_rate_limit_pauses_model_and_falls_to_next(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv("VOICETYPE_CLEANUP_MODELS", "meta-llama/llama-3.3-70b-instruct,gemini-2.5-flash-lite")
+    with patch("voice_type.llm.genai.Client") as mock_cls, \
+         patch("voice_type.llm.openrouter.chat", side_effect=OpenRouterError(429, "rate limited", 30.0)):
+        mock_cls.return_value.models.generate_content.return_value.text = "from gemini"
+        client = LLMClient()
+        assert client.clean("text") == "from gemini"
+        assert 0 < client._model_cooldown_remaining_s("meta-llama/llama-3.3-70b-instruct") <= 30.0
+
+
+def test_openrouter_only_skips_gemini_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    with patch("voice_type.llm.genai.Client") as mock_cls:
+        client = LLMClient()
+    assert client.available is True
+    assert all("/" in m for m in client._models)
+    mock_cls.assert_not_called()

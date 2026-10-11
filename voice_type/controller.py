@@ -25,6 +25,7 @@ import numpy as np
 import numpy.typing as npt
 from loguru import logger
 
+from voice_type import openrouter
 from voice_type.audio import AudioRecorder, MicrophoneError, trim_silence
 from voice_type.cleanup import fast_clean
 from voice_type.config import AppConfig
@@ -36,6 +37,7 @@ from voice_type.llm_local import LocalLLMClient
 from voice_type.paste import PasteService
 from voice_type.states import State
 from voice_type.stt import STTClient
+from voice_type.stt_openrouter import OpenRouterSTTClient
 from voice_type.stt_whisper import WhisperSTTClient
 from voice_type.tray import TrayIcon
 from voice_type.window import capture_active_window
@@ -86,6 +88,10 @@ class AppController:
         self._stt = STTClient(config) if config.gcp_credentials_path is not None else None
         self._stt_whisper = WhisperSTTClient(config)
         self._cloud_fallback_enabled = config.cloud_fallback
+        # OpenRouter audio model is the preferred rescue; Chirp needs GCP billing.
+        self._openrouter_stt = (
+            OpenRouterSTTClient() if config.cloud_fallback and openrouter.api_key() else None
+        )
         self._log_transcripts = config.log_transcripts
         self._llm = LLMClient(project=config.gcp_project_id)
         self._paste = PasteService()
@@ -411,10 +417,13 @@ class AppController:
         RuntimeError if selected without GCP credentials.
         """
         if self.stt_provider == "local":
-            local_text = await self._stt_whisper.recognize(audio_bytes)
-            if not local_text and not self._cancel_requested and self._cloud_fallback_enabled and self._stt is not None:
+            cloud = (self._openrouter_stt or self._stt) if self._cloud_fallback_enabled else None
+            # With a cloud fallback, a stuck local server costs ~15s instead of
+            # the minutes-long whisper-cli ladder (see stt_whisper fast_fail).
+            local_text = await self._stt_whisper.recognize(audio_bytes, fast_fail=cloud is not None)
+            if not local_text and not self._cancel_requested and cloud is not None:
                 logger.warning("Local STT empty -- falling back to cloud once")
-                return await self._stt.recognize(audio_bytes)
+                return await cloud.recognize(audio_bytes)
             return local_text
         if self._stt is None:
             raise RuntimeError(
