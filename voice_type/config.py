@@ -38,6 +38,8 @@ class AppConfig:
                       Default: "local" so audio stays on-device unless opted in.
         whisper_model: Faster-whisper model name. Only used when stt_provider="local".
                        Default: "large-v3-turbo" (fast, ~1.6GB).
+        whisper_model_dir: Directory with ggml-*.bin models. None means
+                           runtime/whisper-cpp/model inside the repo.
     """
     hotkey: str
     gcp_credentials_path: Path | None
@@ -45,6 +47,7 @@ class AppConfig:
     stt_region: str = "us"
     stt_provider: str = "local"
     whisper_model: str = "large-v3-turbo"
+    whisper_model_dir: Path | None = None
     whisper_prompt: str = _DEFAULT_WHISPER_PROMPT
     cypher_planner: str = "off"
     cypher_planner_model: str = "gemini-2.5-flash"
@@ -89,6 +92,12 @@ def load_config() -> AppConfig:
 
     # --- WHISPER_MODEL (optional, has default) ---
     whisper_model = os.environ.get("VOICETYPE_WHISPER_MODEL", "large-v3-turbo").strip()
+
+    # --- WHISPER_MODEL_DIR (optional) ---
+    # A worker started at Windows logon could not follow the repo's model
+    # junction (2026-10-12..20), so the real SSD path can be given directly.
+    raw_model_dir = os.environ.get("VOICETYPE_WHISPER_MODEL_DIR", "").strip()
+    whisper_model_dir = Path(raw_model_dir) if raw_model_dir else None
 
     # --- WHISPER_PROMPT / vocabulary bias (optional, has default) ---
     whisper_prompt = os.environ.get("VOICETYPE_WHISPER_PROMPT", "").strip() or _DEFAULT_WHISPER_PROMPT
@@ -165,6 +174,7 @@ def load_config() -> AppConfig:
         stt_region=stt_region,
         stt_provider=stt_provider,
         whisper_model=whisper_model,
+        whisper_model_dir=whisper_model_dir,
         whisper_prompt=whisper_prompt,
         cypher_planner=cypher_planner,
         cypher_planner_model=cypher_planner_model,
@@ -183,6 +193,7 @@ if __name__ == "__main__":
     print(f"stt_region:           {cfg.stt_region}")
     print(f"stt_provider:         {cfg.stt_provider}")
     print(f"whisper_model:        {cfg.whisper_model}")
+    print(f"whisper_model_dir:    {cfg.whisper_model_dir}")
     print(f"cloud_fallback:       {cfg.cloud_fallback}")
     print(f"log_transcripts:      {cfg.log_transcripts}")
     print(f"log_level:            {cfg.log_level}")

@@ -138,7 +138,8 @@ class WhisperSTTClient:
         self._model_name = config.whisper_model
         self._prompt = config.whisper_prompt
         self._log_transcripts = config.log_transcripts
-        self._model_path = _MODEL_DIR / f"ggml-{self._model_name}.bin"
+        self._model_dir = config.whisper_model_dir or _MODEL_DIR
+        self._model_path = self._model_dir / f"ggml-{self._model_name}.bin"
         self._server_ready = threading.Event()
         self._server_lock = threading.Lock()
         self._server_thread: threading.Thread | None = None
@@ -558,7 +559,7 @@ class WhisperSTTClient:
         if not self._model_path.exists():
             raise FileNotFoundError(
                 f"Model not found at {self._model_path}. "
-                f"Download ggml-{self._model_name}.bin to {_MODEL_DIR}/"
+                f"Download ggml-{self._model_name}.bin to {self._model_dir}/"
             )
 
         wav_path = str(_WHISPER_DIR / f"audio_{uuid.uuid4().hex[:8]}.wav")

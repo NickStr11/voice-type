@@ -90,7 +90,9 @@ class AppController:
         self._cloud_fallback_enabled = config.cloud_fallback
         # OpenRouter audio model is the preferred rescue; Chirp needs GCP billing.
         self._openrouter_stt = (
-            OpenRouterSTTClient() if config.cloud_fallback and openrouter.api_key() else None
+            OpenRouterSTTClient(vocabulary=config.whisper_prompt)
+            if config.cloud_fallback and openrouter.api_key()
+            else None
         )
         self._log_transcripts = config.log_transcripts
         self._llm = LLMClient(project=config.gcp_project_id)
