@@ -85,6 +85,27 @@ def test_preserves_dib_image_and_html_bytes() -> None:
     assert [call.args for call in clipboard.GetClipboardData.call_args_list] == [(8,), (49161,)]
 
 
+def test_unreadable_format_is_dropped_instead_of_blocking_paste() -> None:
+    # Explorer copy: EnterpriseDataProtectionId has a NULL handle and raises.
+    clipboard = WIN32_MOCKS["win32clipboard"]
+    clipboard.EnumClipboardFormats.side_effect = [13, 49273, 0]
+    clipboard.GetClipboardData.side_effect = ["original", RuntimeError("GetClipboardData")]
+    svc = PasteService()
+    with patch("voice_type.paste.time.sleep"):
+        assert svc.paste("hello", 12345) is True
+    assert svc.last_error is None
+    assert [call.args for call in clipboard.SetClipboardData.call_args_list] == [
+        (13, "hello"), (13, "original")
+    ]
+
+
+def test_clipboard_briefly_busy_is_retried() -> None:
+    clipboard = WIN32_MOCKS["win32clipboard"]
+    clipboard.OpenClipboard.side_effect = [RuntimeError("busy"), None, None]
+    with patch("voice_type.paste.time.sleep"):
+        assert PasteService().paste("hello", 12345) is True
+
+
 def test_unsupported_handle_does_not_destroy_existing_clipboard() -> None:
     clipboard = WIN32_MOCKS["win32clipboard"]
     clipboard.EnumClipboardFormats.side_effect = [2, 0]

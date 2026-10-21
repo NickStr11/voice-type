@@ -24,6 +24,18 @@ class _UnsupportedClipboard(Exception):
     pass
 
 
+def _open_clipboard() -> None:
+    """Another app (clipboard managers, Explorer) may hold it for a few ms."""
+    for attempt in range(5):
+        try:
+            win32clipboard.OpenClipboard()
+            return
+        except Exception:
+            if attempt == 4:
+                raise
+            time.sleep(0.03)
+
+
 class PasteService:
     """Deliver text and expose a recoverable outcome without logging content."""
 
@@ -53,7 +65,8 @@ class PasteService:
             snapshot, sequence = _replace_clipboard(text)
         except _UnsupportedClipboard:
             return self._fail("unsupported_clipboard")
-        except Exception:
+        except Exception as exc:
+            logger.warning(f"Clipboard swap failed: {exc!r}")
             return self._fail("clipboard_unavailable")
 
         try:
@@ -123,7 +136,14 @@ def _snapshot_clipboard() -> _ClipboardSnapshot:
             # Even when Get returns metafile bytes, Set expects a native handle,
             # not a global-memory buffer. Refuse before emptying the clipboard.
             raise _UnsupportedClipboard()
-        data = win32clipboard.GetClipboardData(fmt)
+        try:
+            data = win32clipboard.GetClipboardData(fmt)
+        except Exception:
+            # Explorer advertises EnterpriseDataProtectionId with a NULL handle;
+            # an unreadable format cannot be restored anyway, so drop it rather
+            # than block every dictation until the user copies something else.
+            logger.debug(f"Skipping unreadable clipboard format {fmt}")
+            continue
         if not isinstance(data, (str, bytes)):
             # CF_BITMAP/metafiles return borrowed handles invalid after Empty.
             # CF_HDROP returns paths instead of the original DROPFILES block.
@@ -134,7 +154,7 @@ def _snapshot_clipboard() -> _ClipboardSnapshot:
 
 def _replace_clipboard(text: str) -> tuple[_ClipboardSnapshot, int]:
     """Snapshot and swap under one clipboard lock to avoid overwriting a copy."""
-    win32clipboard.OpenClipboard()
+    _open_clipboard()
     try:
         snapshot = _snapshot_clipboard()
         win32clipboard.EmptyClipboard()
@@ -157,7 +177,7 @@ def _write_snapshot(snapshot: _ClipboardSnapshot) -> None:
 
 
 def _restore_clipboard(snapshot: _ClipboardSnapshot, sequence: int) -> None:
-    win32clipboard.OpenClipboard()
+    _open_clipboard()
     try:
         # Check while locked: another application may have copied something
         # during the paste delay, even text identical to the dictated text.
@@ -168,7 +188,7 @@ def _restore_clipboard(snapshot: _ClipboardSnapshot, sequence: int) -> None:
 
 
 def _set_clipboard_text(text: str) -> None:
-    win32clipboard.OpenClipboard()
+    _open_clipboard()
     try:
         win32clipboard.EmptyClipboard()
         win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
