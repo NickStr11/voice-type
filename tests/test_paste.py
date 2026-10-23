@@ -99,6 +99,24 @@ def test_unreadable_format_is_dropped_instead_of_blocking_paste() -> None:
     ]
 
 
+def test_explorer_file_copy_is_restored_as_dropfiles() -> None:
+    # Explorer copy: CF_HDROP reads back as a path tuple, not restorable bytes.
+    clipboard = WIN32_MOCKS["win32clipboard"]
+    clipboard.EnumClipboardFormats.side_effect = [15, 0]
+    clipboard.GetClipboardData.return_value = ("C:\\a.txt", "C:\\б.pdf")
+    svc = PasteService()
+    with patch("voice_type.paste.time.sleep"):
+        assert svc.paste("hello", 12345) is True
+    assert svc.last_error is None
+    expected = (
+        b"\x14\x00\x00\x00" + b"\x00" * 12 + b"\x01\x00\x00\x00"
+        + "C:\\a.txt\0C:\\б.pdf\0\0".encode("utf-16-le")
+    )
+    assert [call.args for call in clipboard.SetClipboardData.call_args_list] == [
+        (13, "hello"), (15, expected)
+    ]
+
+
 def test_clipboard_briefly_busy_is_retried() -> None:
     clipboard = WIN32_MOCKS["win32clipboard"]
     clipboard.OpenClipboard.side_effect = [RuntimeError("busy"), None, None]

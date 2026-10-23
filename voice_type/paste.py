@@ -6,6 +6,7 @@ formats are left untouched and reported to the caller for manual recovery.
 """
 from __future__ import annotations
 
+import struct
 import threading
 import time
 from typing import cast
@@ -144,12 +145,21 @@ def _snapshot_clipboard() -> _ClipboardSnapshot:
             # than block every dictation until the user copies something else.
             logger.debug(f"Skipping unreadable clipboard format {fmt}")
             continue
+        if fmt == win32con.CF_HDROP and isinstance(data, tuple):
+            # Explorer file copy: Get returns paths, Set needs a DROPFILES block.
+            data = _dropfiles(cast(tuple[str, ...], data))
         if not isinstance(data, (str, bytes)):
             # CF_BITMAP/metafiles return borrowed handles invalid after Empty.
             # CF_HDROP returns paths instead of the original DROPFILES block.
             raise _UnsupportedClipboard()
         snapshot.append((fmt, data))
     return snapshot
+
+
+def _dropfiles(paths: tuple[str, ...]) -> bytes:
+    """DROPFILES header (pFiles=20, pt, fNC, fWide=1) + double-NUL UTF-16 list."""
+    names = "".join(f"{path}\0" for path in paths) + "\0"
+    return struct.pack("<IiiII", 20, 0, 0, 0, 1) + names.encode("utf-16-le")
 
 
 def _replace_clipboard(text: str) -> tuple[_ClipboardSnapshot, int]:
@@ -163,10 +173,11 @@ def _replace_clipboard(text: str) -> tuple[_ClipboardSnapshot, int]:
         except Exception:
             _write_snapshot(snapshot)
             raise
-        sequence = cast(int, win32clipboard.GetClipboardSequenceNumber())
-        return snapshot, sequence
     finally:
         win32clipboard.CloseClipboard()
+    # Close synthesizes CF_TEXT/CF_OEMTEXT/CF_LOCALE and bumps the sequence;
+    # read it inside the lock and restore never matches.
+    return snapshot, cast(int, win32clipboard.GetClipboardSequenceNumber())
 
 
 def _write_snapshot(snapshot: _ClipboardSnapshot) -> None:
