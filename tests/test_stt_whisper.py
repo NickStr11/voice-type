@@ -4,13 +4,22 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from voice_type.config import AppConfig
 from voice_type.stt_whisper import WhisperSTTClient, _rejoin_wrapped_words, cleanup_stale_temp_files
+
+
+@pytest.fixture(autouse=True)
+def _no_real_gpu_warmup() -> Iterator[None]:
+    """A started server fires a background warm-up; never let it reach a live :8178."""
+    with patch.object(WhisperSTTClient, "_warm_gpu_background", autospec=True):
+        yield
 
 
 @pytest.fixture()
@@ -560,3 +569,61 @@ def test_shutdown_terminates_managed_server(config: AppConfig) -> None:
 )
 def test_rejoin_wrapped_words(raw: str, expected: str) -> None:
     assert _rejoin_wrapped_words(raw) == expected
+
+
+def test_warm_gpu_sends_silent_clip_without_prompt(config: AppConfig) -> None:
+    with patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True):
+        client = WhisperSTTClient(config)
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = b'{"text": ""}'
+    with patch("voice_type.stt_whisper.request.urlopen", return_value=response) as mock_urlopen:
+        client._warm_gpu()
+
+    mock_urlopen.assert_called_once()
+    req = mock_urlopen.call_args.args[0]
+    assert req.full_url.endswith("/inference")
+    assert b'name="temperature_inc"\r\n\r\n0.0' in req.data
+    assert b'name="prompt"' not in req.data
+    assert b"RIFF" in req.data
+
+
+def _start_worker(config: AppConfig, mock_paths: tuple[Path, Path], *, already_running: bool) -> MagicMock:
+    cli, model = mock_paths
+    process = MagicMock()
+    process.poll.return_value = None
+    health = iter([already_running, True, True])
+    with (
+        patch("voice_type.stt_whisper._SERVER_EXE", cli.with_name("whisper-server.exe")),
+        patch("voice_type.stt_whisper._MODEL_DIR", model.parent),
+        patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True),
+        patch.object(WhisperSTTClient, "_start_resume_watch", autospec=True),
+        patch.object(WhisperSTTClient, "_launch_server_process", return_value=process),
+        patch.object(WhisperSTTClient, "_server_healthcheck", side_effect=lambda: next(health)),
+    ):
+        # Mocked by the autouse _no_real_gpu_warmup fixture.
+        mock_warm = cast(MagicMock, WhisperSTTClient._warm_gpu_background)
+        client = WhisperSTTClient(config)
+        client._start_server_worker()
+    assert client._server_available
+    return mock_warm
+
+
+def test_freshly_launched_server_gets_warmed(config: AppConfig, _mock_paths: tuple[Path, Path]) -> None:
+    """A reloaded server (resume, logon) pays a first-request cost: absorb it in the background."""
+    assert _start_worker(config, _mock_paths, already_running=False).call_count == 1
+
+
+def test_reused_running_server_is_not_warmed(config: AppConfig, _mock_paths: tuple[Path, Path]) -> None:
+    assert _start_worker(config, _mock_paths, already_running=True).call_count == 0
+
+
+def test_recording_start_does_not_fire_warmup_request(config: AppConfig) -> None:
+    """Idle on a loaded server costs nothing (measured), so recording start sends no extra request."""
+    with patch.object(WhisperSTTClient, "_ensure_server_background", autospec=True):
+        client = WhisperSTTClient(config)
+        client._server_available = True
+        client._server_ready.set()
+        with patch("voice_type.stt_whisper.request.urlopen") as mock_urlopen:
+            client.warmup()
+    mock_urlopen.assert_not_called()
+    assert client._gpu_warm_thread is None

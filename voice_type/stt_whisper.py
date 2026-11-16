@@ -21,6 +21,7 @@ Notes:
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import re
@@ -66,6 +67,16 @@ _TEMP_OUTPUT_SUFFIXES = (".wav", ".json", ".txt", ".srt", ".vtt", ".csv", ".lrc"
 # sleep transitions by stopping it after idle, and discard it after a resume gap.
 _RESUME_POLL_S = 30.0
 _RESUME_GAP_S = 90.0
+
+# One silent request right after a freshly launched server is healthy. Live log
+# 2026-10-21..11-16: a long idle on the SAME server costs nothing (74 ms of STT
+# per second of audio after >30 min vs ~70 warm), but the first dictation after
+# the server was reloaded (resume from sleep, logon) ran at 130 ms/s. The
+# encoder always runs a full 30s window, so a 1s clip does the same GPU work as
+# a real one and absorbs that first-request cost before anyone is waiting.
+# An idle-based warm-up on recording start was tried and measured useless.
+_WARM_CLIP_S = 1.0
+_WARM_TIMEOUT_S = 15.0
 
 
 def cleanup_stale_temp_files(directory: Path | None = None) -> int:
@@ -155,6 +166,8 @@ class WhisperSTTClient:
         # failed). >0 means the GPU/Vulkan hot path is currently dead — see
         # _note_cpu_fallback / docs/learned-the-hard-way.md §3.
         self._cpu_fallback_streak = 0
+        self._gpu_warm_lock = threading.Lock()
+        self._gpu_warm_thread: threading.Thread | None = None
 
         if not _SERVER_EXE.exists() or not self._model_path.exists():
             self._server_ready.set()
@@ -168,6 +181,45 @@ class WhisperSTTClient:
     def warmup(self) -> None:
         """Ensure server startup is in progress."""
         self._ensure_server_background()
+
+    def _warm_gpu_background(self) -> None:
+        """Fire a silent clip at a freshly loaded server, off the dictation path."""
+        with self._gpu_warm_lock:
+            if self._gpu_warm_thread is not None and self._gpu_warm_thread.is_alive():
+                return
+            self._gpu_warm_thread = threading.Thread(
+                target=self._warm_gpu,
+                name="whisper-gpu-warm",
+                daemon=True,
+            )
+            self._gpu_warm_thread.start()
+
+    def _warm_gpu(self) -> None:
+        silence = b"\x00\x00" * int(16000 * _WARM_CLIP_S)
+        wav = self._wav_bytes(silence)
+        boundary = f"----VoiceTypeBoundary{uuid.uuid4().hex}"
+        # No prompt and no temperature fallback: silence must not trigger
+        # extra decode passes that would hold the server when the real clip lands.
+        body = self._multipart(
+            boundary,
+            {"temperature": "0.0", "temperature_inc": "0.0", "response_format": "json", "language": "ru"},
+            "warmup.wav",
+            wav,
+        )
+        req = request.Request(
+            f"{_SERVER_URL}/inference",
+            data=body,
+            method="POST",
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        t0 = time.perf_counter()
+        try:
+            with request.urlopen(req, timeout=_WARM_TIMEOUT_S) as response:
+                response.read()
+        except Exception as exc:
+            logger.debug(f"Whisper GPU warm-up failed: {exc}")
+            return
+        logger.info(f"Whisper GPU warm-up done in {time.perf_counter() - t0:.2f}s")
 
     def _ensure_server_background(self) -> None:
         if self._server_ready.is_set() and self._server_available:
@@ -216,6 +268,7 @@ class WhisperSTTClient:
                     self._server_available = True
                     self._server_start_error = None
                     logger.info("Whisper server ready")
+                    self._warm_gpu_background()
                     return
                 time.sleep(0.25)
 
@@ -392,7 +445,6 @@ class WhisperSTTClient:
                 pass
 
     def _encode_multipart(self, boundary: str, wav_path: Path) -> bytes:
-        parts: list[bytes] = []
         fields = {
             "temperature": "0.0",
             "temperature_inc": "0.2",
@@ -406,26 +458,39 @@ class WhisperSTTClient:
             "prompt": self._prompt,
         }
 
-        for name, value in fields.items():
-            parts.append(
-                (
-                    f"--{boundary}\r\n"
-                    f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
-                    f"{value}\r\n"
-                ).encode()
-            )
+        return self._multipart(boundary, fields, wav_path.name, wav_path.read_bytes())
 
+    @staticmethod
+    def _multipart(boundary: str, fields: dict[str, str], filename: str, wav: bytes) -> bytes:
+        parts: list[bytes] = [
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                f"{value}\r\n"
+            ).encode()
+            for name, value in fields.items()
+        ]
         parts.append(
             (
                 f"--{boundary}\r\n"
-                f'Content-Disposition: form-data; name="file"; filename="{wav_path.name}"\r\n'
+                f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
                 "Content-Type: audio/wav\r\n\r\n"
             ).encode()
-            + wav_path.read_bytes()
+            + wav
             + b"\r\n"
         )
         parts.append(f"--{boundary}--\r\n".encode())
         return b"".join(parts)
+
+    @staticmethod
+    def _wav_bytes(pcm: bytes) -> bytes:
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(16000)
+            wav_file.writeframes(pcm)
+        return buf.getvalue()
 
     def _run_cli(self, wav_path: str, use_gpu: bool = True) -> str:
         """Run whisper-cli.exe and return transcribed text."""

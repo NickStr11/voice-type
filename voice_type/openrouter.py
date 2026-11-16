@@ -4,8 +4,13 @@
   scanning (Kaspersky here) re-signs openrouter.ai with its own root; Windows
   trusts it, the certifi bundle does not, so plain httpx fails intermittently
   with CERTIFICATE_VERIFY_FAILED. Verification stays on.
-- provider.sort=latency: OpenRouter picks the fastest host for the model
-  (Groq for Llama 3.3 70B — ~0.4s cleanup in the 2026-10-11 benchmark).
+- Provider routing: sort=latency alone did not stick to the fastest host. In
+  Nov 2026 it mostly routed Llama 3.3 70B to CoreWeave (cleanup median 1.25s in
+  the live log). A direct benchmark on 2026-11-16 (real cleanup prompt, 12
+  calls each): Groq 0.37s median / 0.66 p90, sort=latency 1.24 / 1.41,
+  DeepInfra 3.07 / 5.50. So models in _PREFERRED_PROVIDERS name their host
+  first. Fallbacks stay on, so a Groq outage still lands on a slower host
+  instead of failing the request.
 """
 from __future__ import annotations
 
@@ -16,8 +21,13 @@ from typing import Any, Final, cast
 
 import httpx
 import truststore
+from loguru import logger
 
 _URL: Final[str] = "https://openrouter.ai/api/v1/chat/completions"
+
+_PREFERRED_PROVIDERS: Final[dict[str, tuple[str, ...]]] = {
+    "meta-llama/llama-3.3-70b-instruct": ("Groq",),
+}
 
 _client: httpx.Client | None = None
 _client_lock = threading.Lock()
@@ -61,7 +71,7 @@ def chat(model: str, content: str | list[dict[str, Any]], timeout_s: float) -> s
         "model": model,
         "messages": [{"role": "user", "content": content}],
         "temperature": 0,
-        "provider": {"sort": "latency"},
+        "provider": provider_preferences(model),
     }
     if model.startswith("google/"):
         # Formatting/transcription gains nothing from thinking; it only adds latency.
@@ -102,4 +112,18 @@ def chat(model: str, content: str | list[dict[str, Any]], timeout_s: float) -> s
         text: Any = data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError) as exc:
         raise OpenRouterError(None, "malformed response") from exc
+
+    preferred = _PREFERRED_PROVIDERS.get(model)
+    served_by = data.get("provider")
+    if preferred and isinstance(served_by, str) and served_by not in preferred:
+        # Silent fallback to a slow host is how cleanup drifted to ~1.2s before.
+        logger.info(f"OpenRouter {model} served by {served_by}, not {'/'.join(preferred)}")
     return str(text).strip()
+
+
+def provider_preferences(model: str) -> dict[str, Any]:
+    """OpenRouter `provider` block: pinned host first when known, else fastest."""
+    preferred = _PREFERRED_PROVIDERS.get(model)
+    if preferred:
+        return {"order": list(preferred), "allow_fallbacks": True, "sort": "latency"}
+    return {"sort": "latency"}
